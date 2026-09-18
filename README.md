@@ -152,6 +152,13 @@ Private directories must already belong to the configured host UID with no
 group/other permissions. Provisioning is explicit; this function never widens
 permissions or repairs arbitrary paths.
 
+Hosts that supply `toolProviderModule` must first require
+`protectedWorkerProviderApiVersion === 1` from the bootstrap export. This
+capability means the module is validated inside the protected installation and
+loaded only in the unprivileged worker, with no native-tool fallback on loading
+failure. Older releases without this export do not enforce this contract and
+must not be used for host-specific tool guards.
+
 The worker uses a configured absolute util-linux `setpriv` path to set
 `no_new_privs` before Node executes. Kernel `NoNewPrivs: 1` is checked alongside
 UID identity. The complete bootstrap primitive passed the real Linux worker

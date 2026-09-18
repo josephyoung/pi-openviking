@@ -4,6 +4,11 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadWorkerProvider, protectedWorkerModule } from '../dist/worker-provider.js';
+import { protectedWorkerProviderApiVersion } from '../dist/bootstrap.js';
+
+test('bootstrap advertises the enforced custom-provider contract', () => {
+  assert.equal(protectedWorkerProviderApiVersion, 1);
+});
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'pi-worker-provider-'));

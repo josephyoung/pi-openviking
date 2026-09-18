@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { NativeToolWorker, type WorkerOptions } from './tool-worker.js';
 import { protectedWorkerModule } from './worker-provider.js';
 
+/** Hosts must require this capability before relying on custom worker guards. */
+export const protectedWorkerProviderApiVersion = 1;
+
 export interface ProtectedPaths {
   workspace: string;
   agentDir: string;
