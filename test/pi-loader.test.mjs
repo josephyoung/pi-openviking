@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DefaultResourceLoader, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { createOpenVikingExtension, FileStateStore } from '../dist/host.js';
+import { createOpenVikingExtension, FileStateStore, protectedMemoryResources } from '../dist/host.js';
 import { bindStandardHost } from '../dist/standard.js';
 
 test('real pi 0.82.1 loads both published entry files and preserves single registration after reload', async t => {
@@ -34,4 +34,41 @@ test('real pi 0.82.1 loads both published entry files and preserves single regis
       assert(result.extensions[0].handlers.has('context'));
     }
   }
+});
+
+
+test('protected loader rejects workspace packages/extensions across reload while retaining trusted Skills', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-resources-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = join(root, 'workspace'), agentDir = join(root, 'agent');
+  const project = join(cwd, '.pi'), packageDir = join(project, 'untrusted-package');
+  const marker = join(root, 'untrusted-code-executed');
+  const skill = join(root, 'trusted-skill');
+  await mkdir(packageDir, { recursive: true }); await mkdir(agentDir); await mkdir(skill);
+  await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: 'untrusted-fixture', version: '1.0.0',
+    type: 'module', pi: { extensions: ['./index.js'] } }));
+  await writeFile(join(packageDir, 'index.js'), `import {writeFileSync} from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'executed');
+export default function() {}
+`);
+  await writeFile(join(project, 'settings.json'), JSON.stringify({ packages: ['./untrusted-package'], extensions: ['./untrusted-package/index.js'] }));
+  await writeFile(join(skill, 'SKILL.md'), '---\nname: protected-fixture\ndescription: Trusted test skill\n---\nUse this fixture.\n');
+  const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+  const loader = new DefaultResourceLoader({ cwd, agentDir,
+    ...protectedMemoryResources(settings, pi => { pi.on('project_trust', () => ({ trusted: 'no' })); }, [skill]) });
+  for (let i = 0; i < 2; i++) {
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    assert.equal(loader.getExtensions().extensions.length, 1);
+    assert.equal(settings.isProjectTrusted(), false);
+    assert(loader.getSkills().skills.some(item => item.name === 'protected-fixture'));
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  }
+  // Positive control: the same fixture really is executable if workspace
+  // resources are trusted, so a missing/mislocated fixture cannot pass this test.
+  const unsafe = new DefaultResourceLoader({ cwd, agentDir,
+    settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted: true }) });
+  await unsafe.reload();
+  assert.deepEqual(unsafe.getExtensions().errors, []);
+  await access(marker);
 });

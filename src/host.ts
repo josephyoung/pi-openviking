@@ -5,7 +5,9 @@ import { MemoryDelivery, type DeliveryTransport } from './delivery.js';
 import type { RecalledMemory } from './openviking-client.js';
 import { sameOwner, type Owner, type StateStore } from './types.js';
 
+export { protectedMemoryResources } from './resource-profile.js';
 export { FileStateStore } from './state-store.js';
+export { DeliveryScheduler } from './scheduler.js';
 export { MemoryDelivery } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
 export type { Owner, Source, Operation, StateStore } from './types.js';
@@ -46,6 +48,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
   return pi => {
     if (registered.has(pi)) throw new Error('DUPLICATE_MEMORY_EXTENSION');
     registered.add(pi);
+    pi.on('project_trust', () => ({ trusted: 'no', remember: false }));
     let query = '';
     let cached: { revision: number; text: string } | undefined;
     let lifetime = new AbortController();

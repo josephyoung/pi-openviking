@@ -39,6 +39,8 @@ export interface Operation {
   archiveId?: string;
   memoryUris?: string[];
   errorCode?: string;
+  deliveryAttempts?: number;
+  nextAttemptAt?: number;
 }
 
 export interface OwnerState {

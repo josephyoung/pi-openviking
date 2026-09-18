@@ -27,6 +27,12 @@ The Linux tool-worker launcher and product integration are still being implement
   An unknown message/commit outcome is reconciled through public APIs and never
   blindly retransmitted. Missing or expired receipts require reconciliation;
   they do not authorize repeating a non-idempotent call.
+- Owner-level background scheduling with durable backoff, startup recovery,
+  bounded processing and shutdown. Exhausted reconciliation stays visibly blocked;
+  it never turns an unknown remote outcome into an automatic resend.
+- Protected resource-loader configuration rejects workspace packages/extensions
+  while preserving explicitly supplied trusted Skills. Apply before package
+  resolution; `noExtensions` alone is insufficient.
 - `ready` requires a completed matching task, an archive containing the source,
   a matching memory diff, current content and a successful retrieval probe.
 - Pause suppresses unsent operations and removes their pending bodies. Enabling
@@ -47,7 +53,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (16 tests in the current development run). It does not prove
+lifecycle behavior (22 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
@@ -73,7 +79,7 @@ from tool-writable paths. That launcher must be integrated and verified before
 activating memory in either pi or Dano. Current modules are not a substitute
 for that boundary.
 
-Further #474 gates: standard/host entries, bounded recall, reliable scheduling,
+Further #474 gates: complete CLI bootstrap and tool routing,
 credential isolation, Dano exact-version integration, authenticated settings
 and management, ordinary pi and real in-app Browser acceptance. Subsequent
 #475–477 work covers full collection/lifecycle/governance and release gates.
@@ -98,3 +104,9 @@ absolute and symlink read/write/edit against the host-private credential failed;
 Bash inherited no synthetic memory key; updates and cancellation worked. The
 container used no network and was removed after the run. This verifies the
 worker primitive, not the final CLI/Dano launch and resource-discovery profile.
+
+The actual background scheduler also completed a fresh real-service save on
+2026-09-18: it reached `ready` after 30.3 seconds and the subsequent query
+retrieved the synthetic preference. No viewer or foreground delivery calls
+advanced the operation. Reproduce with `scripts/real-scheduler.mjs` and a fresh
+disposable account config, using the same private-config rules above.

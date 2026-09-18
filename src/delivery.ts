@@ -34,6 +34,8 @@ export class MemoryDelivery {
     this.#maxPayloadBytes = options.maxPayloadBytes;
   }
 
+  get owner(): Owner { return this.#store.owner; }
+
   async enable(policyVersion: string): Promise<void> {
     if (!policyVersion) throw new Error('MISSING_POLICY_VERSION');
     await this.#store.transact(state => {
@@ -160,7 +162,9 @@ export class MemoryDelivery {
       const current = state.operations[id];
       if (current?.phase !== expected) return;
       Object.assign(current, patch, { updatedAt: new Date().toISOString() });
-      delete current.errorCode;
+      if (!patch.errorCode) delete current.errorCode;
+      current.deliveryAttempts = 0;
+      current.nextAttemptAt = 0;
       if (terminal.has(current.phase)) delete current.payload;
     });
   }

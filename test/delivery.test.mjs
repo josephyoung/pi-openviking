@@ -89,3 +89,15 @@ test('an absent receipt after a lost mutation never authorizes resending', async
   assert.deepEqual(f.remote.mutations, ['create', 'append']);
   assert.equal((await f.store.read()).operations[op.id].phase, 'message_unknown');
 });
+
+test('a terminal extraction failure retains its reason and erases pending content', async t => {
+  const f = await setup(t);
+  f.transport.inspect = async () => ({ status: 'failed', code: 'MEMORY_NO_EXTRACTED_FACT' });
+  await f.service.enable('v1');
+  const operation = await f.service.save(source, 'fact');
+  for (let i = 0; i < 4; i++) await f.service.advance(operation.id);
+  const current = (await f.store.read()).operations[operation.id];
+  assert.equal(current.phase, 'failed');
+  assert.equal(current.errorCode, 'MEMORY_NO_EXTRACTED_FACT');
+  assert.equal(current.payload, undefined);
+});
