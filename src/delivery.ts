@@ -89,6 +89,7 @@ export class MemoryDelivery {
 
   /** Advances at most one remote mutation. The caller owns scheduling/lifetime. */
   async advance(id: string): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('INVALID_MEMORY_OPERATION');
     const operation = await this.#store.transact(state => {
       const current = state.operations[id];
       if (!current || terminal.has(current.phase)) return null;

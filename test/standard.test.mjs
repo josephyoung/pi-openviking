@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import standard, { bindStandardHost } from '../dist/standard.js';
+import { FileStateStore, MemoryDelivery } from '../dist/host.js';
+
+test('standard entry binds tools and explicit management consent to the same worker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-standard-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const owner = { accountId: 'test', userId: 'alice' };
+  const store = new FileStateStore({ owner, directory: root, policyVersion: 'v1' });
+  const client = { owner, async recall() { return []; } };
+  let isolated = true, confirmed = false, hasUI = true;
+  const worker = { workspace: root, async assertIsolated() { if (!isolated) throw new Error('Unavailable'); }, async execute() { throw new Error('Unexpected execution'); } };
+  const options = { owner, stateStore: store, client, async assertToolIsolation() { throw new Error('Must use the bound worker'); },
+    policy: { maxPayloadBytes: 4096, recallTimeoutMs: 100, recallTokenBudget: 500, recallLimit: 3, minimumScore: 0.5, countTokens: s => s.length }, wakeDelivery() {} };
+  bindStandardHost(options, worker);
+  const tools = [], commands = new Map(), notifications = [];
+  await standard({ registerTool: tool => tools.push(tool.name), on() {}, registerCommand: (name, command) => commands.set(name, command) });
+  assert.equal(tools.length, 8);
+  const context = { get hasUI() { return hasUI; }, ui: { async confirm() { return confirmed; }, notify: message => notifications.push(message) } };
+  const run = action => commands.get('memory').handler(action, context);
+  await run('enable');
+  assert.equal((await store.read()).authorization.enabled, false);
+  confirmed = true; hasUI = false;
+  await run('enable');
+  assert.equal((await store.read()).authorization.enabled, false);
+  hasUI = true; isolated = false;
+  await run('enable');
+  assert.equal((await store.read()).authorization.enabled, false);
+  isolated = true;
+  await run('enable');
+  assert.equal((await store.read()).authorization.enabled, true);
+  assert.equal((await store.read()).authorization.automaticCollection, false);
+  const delivery = new MemoryDelivery({ store, transport: client, maxPayloadBytes: 4096 });
+  const operation = await delivery.save({ sessionId: 'chat', entryId: 'entry', branchId: 'root', contentVersion: '1' }, 'SYNTHETIC_PENDING_BODY');
+  await run('status');
+  assert(!notifications.at(-1).includes('SYNTHETIC_PENDING_BODY'));
+  assert(notifications.at(-1).includes(operation.id));
+  await run('pause');
+  const state = await store.read();
+  assert.equal(state.authorization.enabled, false);
+  assert.equal(state.operations[operation.id].phase, 'blocked_by_pause');
+});

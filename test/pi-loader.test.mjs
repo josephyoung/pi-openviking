@@ -20,17 +20,20 @@ test('real pi 0.82.1 loads both published entry files and preserves single regis
       minimumScore: 0.5, countTokens: text => text.length }, wakeDelivery() {} };
   const common = { cwd, agentDir, settingsManager: SettingsManager.inMemory(),
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true };
-  bindStandardHost(options);
-  for (const loader of [
-    new DefaultResourceLoader({ ...common, additionalExtensionPaths: [resolve('dist/standard.js')] }),
-    new DefaultResourceLoader({ ...common, extensionFactories: [{ name: 'openviking', factory: createOpenVikingExtension(options) }] }),
+  bindStandardHost(options, { workspace: cwd, assertIsolated: options.assertToolIsolation, async execute() { throw new Error('No tool execution during registration'); } });
+  for (const [expectedCount, loader] of [
+    [8, new DefaultResourceLoader({ ...common, additionalExtensionPaths: [resolve('dist/standard.js')] })],
+    [1, new DefaultResourceLoader({ ...common, extensionFactories: [{ name: 'openviking', factory: createOpenVikingExtension(options) }] })],
   ]) {
     for (let i = 0; i < 2; i++) {
       await loader.reload();
       const result = loader.getExtensions();
       assert.deepEqual(result.errors, []);
       assert.equal(result.extensions.length, 1);
-      assert.deepEqual([...result.extensions[0].tools.keys()], ['memory_save']);
+      const names = [...result.extensions[0].tools.keys()];
+      assert(names.includes('memory_save'));
+      assert.equal(names.length, expectedCount);
+      if (names.length === 8) assert(result.extensions[0].handlers.has('user_bash'));
       assert(result.extensions[0].handlers.has('context'));
     }
   }

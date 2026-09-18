@@ -13,8 +13,12 @@ The Linux tool-worker launcher and product integration are still being implement
 
 - A Linux native-tool IPC worker with distinct UID, explicit environment
   allowlist, kernel identity checks, bounded requests/results, streamed updates
-  and cancellation. Bootstrap integration is still required.
-- Immutable account/user binding and owner-checked private state files.
+  and cancellation. All seven native definitions and interactive `!`/`!!` shell
+  operations have worker proxies; the standard entry registers these proxies
+  with the memory extension. Bootstrap integration is still required.
+- Immutable account/user binding and owner-checked private state files. Before
+  first data access, the authenticated health response must confirm the expected
+  account, user and USER role; an HTTP 200 with missing identity is insufficient.
 - OS advisory locks, atomic replacement, file and directory fsync. The state
   contains delivery/consent metadata and pending payloads, not a second memory
   database. Kernel locks are released when a writer dies; no lease timeout can
@@ -53,7 +57,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (22 tests in the current development run). It does not prove
+lifecycle behavior (31 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
@@ -79,7 +83,7 @@ from tool-writable paths. That launcher must be integrated and verified before
 activating memory in either pi or Dano. Current modules are not a substitute
 for that boundary.
 
-Further #474 gates: complete CLI bootstrap and tool routing,
+Further #474 gates: complete CLI bootstrap and Dano worker lifecycle integration,
 credential isolation, Dano exact-version integration, authenticated settings
 and management, ordinary pi and real in-app Browser acceptance. Subsequent
 #475–477 work covers full collection/lifecycle/governance and release gates.
@@ -110,3 +114,14 @@ The actual background scheduler also completed a fresh real-service save on
 retrieved the synthetic preference. No viewer or foreground delivery calls
 advanced the operation. Reproduce with `scripts/real-scheduler.mjs` and a fresh
 disposable account config, using the same private-config rules above.
+
+The standard entry exposes `/memory enable` (interactive confirmation),
+`/memory pause`, `/memory status`, and `/memory show <operation-id>`. Its enable
+gate checks the exact worker used by its native tools. Automatic collection
+remains unapproved. Read-only saved-content and credential-owner checks against
+the actual service are reproducible with `scripts/real-read.mjs`.
+
+The Linux worker integration now exercises the registered tool proxies and
+interactive shell, preserving streaming and exit codes. Both cancellation
+paths are checked for absence of a delayed file write, rather than only testing
+that the caller receives a cancellation error.

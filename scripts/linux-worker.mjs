@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, chmod, chown, writeFile, readFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, chmod, chown, writeFile, readFile, symlink, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { NativeToolWorker } from '../dist/tool-worker.js';
+import { createIsolatedToolDefinitions, createIsolatedBashOperations } from '../dist/worker-tools.js';
 assert.equal(process.platform, 'linux');
 assert.equal(process.getuid(), 0);
 const [hostUid, workerUid, groupId] = process.argv.slice(2, 5).map(Number);
@@ -21,6 +22,18 @@ const worker = new NativeToolWorker({ workspace, piPackageContext: '/app/package
 process.setgid(groupId); process.setuid(hostUid);
 try {
   await worker.assertIsolated();
+  const definitions = createIsolatedToolDefinitions(worker);
+  const proxyRead = definitions.find(tool => tool.name === 'read');
+  const proxyWrite = definitions.find(tool => tool.name === 'write');
+  await proxyWrite.execute('proxy-write', { path: 'proxy.txt', content: 'PROXY_OK' }, undefined, undefined, { cwd: workspace });
+  const proxyResult = await proxyRead.execute('proxy-read', { path: 'proxy.txt' }, undefined, undefined, { cwd: workspace });
+  assert(proxyResult.content.some(item => item.text?.includes('PROXY_OK')));
+  await assert.rejects(proxyRead.execute('proxy-denied', { path: credential }, undefined, undefined, { cwd: workspace }), /TOOL_FAILED/);
+  let shellOutput = '';
+  const shell = await createIsolatedBashOperations(worker).exec('test -z "$MEMORY_SYNTHETIC_KEY" && echo INTERACTIVE_SAFE; exit 7', workspace,
+    { env: { MEMORY_SYNTHETIC_KEY: 'must-not-cross-ipc' }, onData: data => { shellOutput += data; } });
+  assert.equal(shell.exitCode, 7);
+  assert(shellOutput.includes('INTERACTIVE_SAFE'));
   await worker.execute('write', { path: 'allowed.txt', content: 'WORKSPACE_OK' });
   const read = await worker.execute('read', { path: 'allowed.txt' });
   assert(read.content.some(item => item.text?.includes('WORKSPACE_OK')));
@@ -35,10 +48,18 @@ try {
   assert(bash.content.some(item => item.text?.includes('NO_INHERITED_KEY')));
   assert.equal(await readFile(credential, 'utf8'), 'SYNTHETIC_PRIVATE_VALUE');
   const controller = new AbortController();
-  const running = worker.execute('bash', { command: 'sleep 30' }, controller.signal);
+  const running = worker.execute('bash', { command: 'sleep 1; printf failed > cancelled-native.txt' }, controller.signal);
   setTimeout(() => controller.abort(), 100);
   await assert.rejects(running, /CANCELLED/);
-  console.log(JSON.stringify({ nativeWorker: true, hostUid, workerUid,
+  const interactiveAbort = new AbortController();
+  const interactive = createIsolatedBashOperations(worker).exec('sleep 1; printf failed > cancelled-interactive.txt', workspace,
+    { signal: interactiveAbort.signal, onData() {} });
+  setTimeout(() => interactiveAbort.abort(), 100);
+  await assert.rejects(interactive, /CANCELLED/);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  await assert.rejects(access(join(workspace, 'cancelled-native.txt')), { code: 'ENOENT' });
+  await assert.rejects(access(join(workspace, 'cancelled-interactive.txt')), { code: 'ENOENT' });
+  console.log(JSON.stringify({ nativeWorker: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
     privateReadWriteEditDenied: true, symlinkDenied: true, credentialAbsentFromEnvironment: true,
     workspaceReadWrite: true, streamingUpdates: true, cancellation: true, finalLauncherVerified: false }));
 } finally {

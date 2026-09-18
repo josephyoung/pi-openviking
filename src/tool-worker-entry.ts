@@ -28,13 +28,28 @@ process.on('message', async message => {
   if (request.type !== 'execute' || typeof request.name !== 'string' || !request.parameters
       || typeof request.parameters !== 'object' || Array.isArray(request.parameters) || running.has(id)) return;
   const tool = tools.get(request.name);
-  if (!tool) { send({ type: 'error', id }); return; }
+  if (!tool && request.name !== 'user_bash') { send({ type: 'error', id }); return; }
   const controller = new AbortController();
   running.set(id, controller);
   try {
     // Native definitions do not consume extension context. No host callback,
     // credentials, mutable environment or arbitrary function crosses this IPC.
-    const value = await tool.execute(id, request.parameters as Record<string, unknown>, controller.signal, update => {
+    if (request.name === 'user_bash') {
+      const parameters = request.parameters as Record<string, unknown>;
+      if (typeof parameters.command !== 'string') throw new Error('INVALID_SHELL_COMMAND');
+      const value = await pi.createLocalBashOperations().exec(parameters.command, workspace, {
+        signal: controller.signal,
+        timeout: typeof parameters.timeout === 'number' ? parameters.timeout : undefined,
+        onData(data) {
+          const value = { data: data.toString('base64') };
+          const update = { type: 'update', id, value };
+          if (Buffer.byteLength(JSON.stringify(update)) <= maxResultBytes) send(update);
+        },
+      });
+      send({ type: 'result', id, value });
+      return;
+    }
+    const value = await tool!.execute(id, request.parameters as Record<string, unknown>, controller.signal, update => {
         const result = { type: 'update', id, value: update };
         if (Buffer.byteLength(JSON.stringify(result)) <= maxResultBytes) send(result);
       }, undefined as never);

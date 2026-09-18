@@ -29,6 +29,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   readonly #key: string;
   readonly #timeoutMs: number;
   readonly #root: string;
+  #identity: Promise<void> | undefined;
 
   constructor(options: { owner: Owner; baseUrl: string; apiKey: string; scope?: string | null; timeoutMs: number }) {
     this.owner = checkedOwner(options.owner);
@@ -46,6 +47,21 @@ export class OwnerMemoryClient implements DeliveryTransport {
     this.#sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
       actorPeerId: this.scope ?? undefined, timeout: this.#timeoutMs,
       fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
+  }
+
+  async verifyIdentity(): Promise<void> {
+    this.#identity ??= (async () => {
+      const response = await fetch(`${this.#baseUrl}/health`, { redirect: 'error',
+        signal: AbortSignal.timeout(this.#timeoutMs), headers: { 'X-API-Key': this.#key } });
+      if (!response.ok) throw new Error('MEMORY_IDENTITY_UNAVAILABLE');
+      const identity = object(await response.json());
+      if (identity.auth_mode !== 'api_key' || identity.role !== 'user'
+          || identity.account_id !== this.owner.accountId || identity.user_id !== this.owner.userId) {
+        throw new Error('MEMORY_CREDENTIAL_OWNER_MISMATCH');
+      }
+    })();
+    try { await this.#identity; }
+    catch (error) { this.#identity = undefined; throw error; }
   }
 
   #check(operation: Readonly<Operation>): void {
@@ -78,6 +94,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   async createSession(id: string): Promise<void> {
+    await this.verifyIdentity();
     const result = object(await this.#request('/sessions', 'POST', {
       session_id: identifier(id), auto_commit_policy: null,
     }));
@@ -85,6 +102,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   async sessionExists(id: string): Promise<boolean> {
+    await this.verifyIdentity();
     try {
       const result = await this.#sdk.getSession(identifier(id), false);
       if (result.session_id !== id) throw new Error('MEMORY_SESSION_MISMATCH');
@@ -97,6 +115,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
 
   async append(operation: Readonly<Operation>): Promise<void> {
     this.#check(operation);
+    await this.verifyIdentity();
     if (!operation.payload) throw new Error('MEMORY_SOURCE_UNAVAILABLE');
     await this.#request(`/sessions/${operation.remoteSessionId}/messages`, 'POST', {
       role: 'user', content: operation.payload, source_message_ids: [operation.id],
@@ -105,15 +124,18 @@ export class OwnerMemoryClient implements DeliveryTransport {
 
   async hasSource(operation: Readonly<Operation>): Promise<boolean> {
     this.#check(operation);
+    await this.verifyIdentity();
     return sourcePresent(await this.#sdk.getSessionContext(operation.remoteSessionId), operation.id);
   }
 
   async commit(id: string): Promise<{ taskId: string; archiveId?: string }> {
+    await this.verifyIdentity();
     const result = object(await this.#request(`/sessions/${identifier(id)}/commit`, 'POST', { keep_recent_count: 0 }));
     return { taskId: identifier(result.task_id) };
   }
 
   async findCommit(id: string): Promise<{ taskId: string } | null> {
+    await this.verifyIdentity();
     const tasks = await this.#sdk.listTasks({ taskType: 'session_commit', resourceId: identifier(id), limit: 200 });
     if (tasks.length !== 1) return null;
     const task = object(tasks[0]);
@@ -123,6 +145,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
 
   async inspect(operation: Readonly<Operation>): ReturnType<DeliveryTransport['inspect']> {
     this.#check(operation);
+    await this.verifyIdentity();
     const task = object(await this.#sdk.getTask(identifier(operation.taskId)));
     if (task.resource_id !== operation.remoteSessionId || task.task_id !== operation.taskId
         || task.task_type !== 'session_commit') throw new Error('MEMORY_TASK_MISMATCH');
@@ -154,8 +177,16 @@ export class OwnerMemoryClient implements DeliveryTransport {
     return memoryUris.length ? { status: 'ready', archiveId, memoryUris } : { status: 'processing' };
   }
 
+  async readMemory(uri: string): Promise<string> {
+    const target = this.#memoryUri(uri);
+    await this.verifyIdentity();
+    return this.#sdk.read(target);
+  }
+
   async recall(query: string, limit: number, signal?: AbortSignal): Promise<RecalledMemory[]> {
     if (!query.trim() || !Number.isSafeInteger(limit) || limit <= 0) return [];
+    signal?.throwIfAborted();
+    await this.verifyIdentity();
     signal?.throwIfAborted();
     const result = await this.#sdk.find(query, { targetUri: this.#root, limit, level: [2] });
     signal?.throwIfAborted();

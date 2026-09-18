@@ -101,3 +101,10 @@ test('a terminal extraction failure retains its reason and erases pending conten
   assert.equal(current.errorCode, 'MEMORY_NO_EXTRACTED_FACT');
   assert.equal(current.payload, undefined);
 });
+
+test('operation references reject prototype property names before touching state', async t => {
+  const f = await setup(t);
+  await assert.rejects(f.service.advance('__proto__'), /INVALID_MEMORY_OPERATION/);
+  await assert.rejects(f.service.advance('constructor'), /INVALID_MEMORY_OPERATION/);
+  assert.equal(Object.prototype.updatedAt, undefined);
+});

@@ -14,7 +14,7 @@ export type { Owner, Source, Operation, StateStore } from './types.js';
 
 export interface MemoryExtensionOptions {
   owner: Owner;
-  client: DeliveryTransport & { recall(query: string, limit: number, signal?: AbortSignal): Promise<RecalledMemory[]> };
+  client: DeliveryTransport & { readMemory?(uri: string): Promise<string>; recall(query: string, limit: number, signal?: AbortSignal): Promise<RecalledMemory[]> };
   stateStore: StateStore;
   scope?: string | null;
   /** Host implementation must verify the live isolated worker, not a config flag. */

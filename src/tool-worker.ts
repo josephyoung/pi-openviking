@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 export const nativeToolNames = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'] as const;
 export type NativeToolName = typeof nativeToolNames[number];
+export type WorkerOperationName = NativeToolName | 'user_bash';
 
 export interface WorkerOptions {
   workspace: string;
@@ -83,7 +84,15 @@ export class NativeToolWorker {
         const pending = this.#pending.get(result.id);
         if (!pending) return;
         if (result.type === 'update') {
-          if (Buffer.byteLength(JSON.stringify(result)) <= options.maxResultBytes) pending.onUpdate?.(result.value);
+          try {
+            if (Buffer.byteLength(JSON.stringify(result)) > options.maxResultBytes) throw new Error('WORKER_UPDATE_LIMIT');
+            pending.onUpdate?.(result.value);
+          } catch {
+            this.#pending.delete(result.id);
+            pending.cleanup();
+            if (this.#child.connected) this.#child.send({ type: 'cancel', id: result.id }, () => {});
+            pending.reject(new Error('MEMORY_WORKER_UPDATE_FAILED'));
+          }
           return;
         }
         this.#pending.delete(result.id);
@@ -108,6 +117,8 @@ export class NativeToolWorker {
     this.#child.once('disconnect', disconnected);
   }
 
+  get workspace(): string { return this.#options.workspace; }
+
   async assertIsolated(): Promise<void> {
     await this.#ready;
     if (this.#closed || !this.#child.connected || process.getuid?.() !== this.#options.hostUid) {
@@ -119,9 +130,9 @@ export class NativeToolWorker {
     if (!uids || uids.slice(1).some(uid => Number(uid) !== this.#options.workerUid)) throw new Error('MEMORY_WORKER_IDENTITY_MISMATCH');
   }
 
-  async execute(name: NativeToolName, parameters: Record<string, unknown>, signal?: AbortSignal, onUpdate?: (value: unknown) => void): Promise<unknown> {
+  async execute(name: WorkerOperationName, parameters: Record<string, unknown>, signal?: AbortSignal, onUpdate?: (value: unknown) => void): Promise<unknown> {
     await this.assertIsolated();
-    if (!nativeToolNames.includes(name) || this.#pending.size >= this.#options.maxConcurrentOperations) {
+    if (!(name === 'user_bash' || nativeToolNames.includes(name as NativeToolName)) || this.#pending.size >= this.#options.maxConcurrentOperations) {
       throw new Error('MEMORY_WORKER_REQUEST_LIMIT');
     }
     signal?.throwIfAborted();

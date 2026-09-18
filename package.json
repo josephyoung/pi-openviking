@@ -19,6 +19,10 @@
     "./worker": {
       "types": "./dist/tool-worker.d.ts",
       "import": "./dist/tool-worker.js"
+    },
+    "./worker-tools": {
+      "types": "./dist/worker-tools.d.ts",
+      "import": "./dist/worker-tools.js"
     }
   },
   "files": [
