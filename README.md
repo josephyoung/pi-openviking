@@ -4,9 +4,9 @@ An independent OpenViking memory extension for pi, tracked by
 [Dano #465](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/465).
 
 **Implementation in progress. No package release or production activation yet.**
-The intended package name is `@josephyoung/pi-openviking`; pi standard and host
-factory entry points, the Linux tool-worker launcher, and product integration
-are still being implemented under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
+The package name is `@josephyoung/pi-openviking`. Both entry modules compile
+against pi 0.82.1; the standard entry fails closed without its launcher binding.
+The Linux tool-worker launcher and product integration are still being implemented under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
 
 ## Implemented
 
@@ -15,6 +15,9 @@ are still being implemented under [#474](https://github.com/zhengchengqiaobusine
   contains delivery/consent metadata and pending payloads, not a second memory
   database. Kernel locks are released when a writer dies; no lease timeout can
   grant a second process permission to repeat a remote mutation.
+- Standard and host factory entry modules; the host never reads global credentials.
+- Bounded, quoted recall in a non-persisted custom context message, with a host
+  tokenizer, per-request cache and pause/lifecycle invalidation.
 - Default-off consent, explicit durable enqueue and stable source deduplication.
 - A dedicated remote Session per save operation, with persisted causal phases.
   An unknown message/commit outcome is reconciled through public APIs and never
@@ -39,7 +42,8 @@ npm run check
 ```
 
 `npm test` covers independent processes, killed writers, concurrent processors,
-response loss, source conflicts, owner mismatch and consent. It does not prove
+response loss, source conflicts, owner mismatch, consent, recall budgets and
+lifecycle behavior (15 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an

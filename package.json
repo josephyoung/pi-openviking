@@ -38,12 +38,13 @@
   },
   "dependencies": {
     "@openviking/sdk": "0.1.0",
-    "fs-ext": "2.1.1"
+    "fs-ext": "2.1.1",
+    "typebox": "1.1.38"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
     "@types/fs-ext": "2.0.3",
     "@types/node": "25.8.0",
-    "typescript": "6.0.3",
-    "@earendil-works/pi-coding-agent": "0.82.1"
+    "typescript": "6.0.3"
   }
 }
