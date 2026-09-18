@@ -24,10 +24,15 @@ await assert.rejects(validateProtectedPaths({ workspace, agentDir: protectedDir,
   installationDir: unsafeInstall, hostUid, workerUid, workerGid: groupId }), /REPLACE_PROTECTED/);
 await rm(unsafeInstall, { recursive: true });
 process.env.MEMORY_SYNTHETIC_KEY = 'SYNTHETIC_PRIVATE_VALUE';
-const { worker } = await bootstrapProtectedWorker({ workspace, agentDir: protectedDir, stateDir: protectedDir,
+const bootstrapOptions = { workspace, agentDir: protectedDir, stateDir: protectedDir,
   installationDir: '/app', hostGid: groupId, piPackageContext: '/app/package.json', privilegeGuard: '/usr/bin/setpriv',
   hostUid, workerUid, workerGid: groupId, path: process.env.PATH,
-  startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 });
+  startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 };
+const outsideContext = join(workspace, 'package.json');
+await writeFile(outsideContext, '{}');
+await assert.rejects(bootstrapProtectedWorker({ ...bootstrapOptions, piPackageContext: outsideContext }), /PI_CONTEXT_OUTSIDE/);
+assert.equal(process.getuid(), 0);
+const { worker } = await bootstrapProtectedWorker(bootstrapOptions);
 try {
   await worker.assertIsolated();
   const definitions = createIsolatedToolDefinitions(worker);
@@ -67,7 +72,7 @@ try {
   await new Promise(resolve => setTimeout(resolve, 1200));
   await assert.rejects(access(join(workspace, 'cancelled-native.txt')), { code: 'ENOENT' });
   await assert.rejects(access(join(workspace, 'cancelled-interactive.txt')), { code: 'ENOENT' });
-  console.log(JSON.stringify({ nativeWorker: true, protectedBootstrap: true, workerOwnedReadonlyCodeRejected: true, noNewPrivileges: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
+  console.log(JSON.stringify({ nativeWorker: true, protectedBootstrap: true, outsidePiContextRejected: true, workerOwnedReadonlyCodeRejected: true, noNewPrivileges: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
     privateReadWriteEditDenied: true, symlinkDenied: true, credentialAbsentFromEnvironment: true,
     workspaceReadWrite: true, streamingUpdates: true, cancellation: true, finalLauncherVerified: false }));
 } finally {

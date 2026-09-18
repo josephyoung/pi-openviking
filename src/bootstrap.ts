@@ -86,15 +86,22 @@ export async function validateProtectedPaths(options: ProtectedPaths): Promise<P
 
 /** Single-host CLI bootstrap. Multi-user hosts must provision each worker explicitly. */
 export async function bootstrapProtectedWorker(options: ProtectedPaths & Omit<WorkerOptions,
-  'workspace' | 'hostUid' | 'workerUid' | 'workerGid'> & { hostGid: number }): Promise<{ worker: NativeToolWorker; paths: ProtectedPaths }> {
+  'workspace' | 'hostUid' | 'workerUid' | 'workerGid'> & { hostGid: number }): Promise<{ worker: NativeToolWorker; paths: ProtectedPaths; piPackageContext: string }> {
   if (process.platform !== 'linux' || process.getuid?.() !== 0
       || !Number.isSafeInteger(options.hostGid) || options.hostGid <= 0) throw new Error('PRIVILEGED_LINUX_BOOTSTRAP_REQUIRED');
   const paths = await validateProtectedPaths(options);
-  const worker = new NativeToolWorker({ ...options, ...paths });
+  const piPackageContext = await realpath(options.piPackageContext);
+  if (!contains(paths.installationDir, piPackageContext) || !(await lstat(piPackageContext)).isFile()) {
+    throw new Error('PI_CONTEXT_OUTSIDE_PROTECTED_INSTALLATION');
+  }
+  const privilegeGuard = await realpath(options.privilegeGuard);
+  await protectedAncestors(privilegeGuard, paths, true);
+  await protectedAncestors(await realpath(process.execPath), paths, true);
+  const worker = new NativeToolWorker({ ...options, ...paths, piPackageContext, privilegeGuard });
   try {
     process.setgid!(options.hostGid);
     process.setuid!(paths.hostUid);
     await worker.assertIsolated();
-    return { worker, paths };
+    return { worker, paths, piPackageContext };
   } catch (error) { worker.close(); throw error; }
 }
