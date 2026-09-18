@@ -5,7 +5,8 @@ An independent OpenViking memory extension for pi, tracked by
 
 **Implementation in progress. No package release or production activation yet.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
-against pi 0.82.1; the standard entry fails closed without its launcher binding.
+against pi 0.82.1. The real pi loader loads both entries and keeps a single
+registration after reload; the standard entry fails closed without its launcher binding.
 The Linux tool-worker launcher and product integration are still being implemented under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
 
 ## Implemented
@@ -43,7 +44,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (15 tests in the current development run). It does not prove
+lifecycle behavior (16 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
