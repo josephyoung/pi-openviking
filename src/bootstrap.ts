@@ -3,6 +3,7 @@ import { dirname, relative, isAbsolute } from 'node:path';
 import type { Stats } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { NativeToolWorker, type WorkerOptions } from './tool-worker.js';
+import { protectedWorkerModule } from './worker-provider.js';
 
 export interface ProtectedPaths {
   workspace: string;
@@ -98,9 +99,11 @@ export async function bootstrapProtectedWorker(options: ProtectedPaths & Omit<Wo
     throw new Error('PI_CONTEXT_OUTSIDE_PROTECTED_INSTALLATION');
   }
   const privilegeGuard = await realpath(options.privilegeGuard);
+  const toolProviderModule = options.toolProviderModule
+    ? await protectedWorkerModule(paths.installationDir, options.toolProviderModule) : undefined;
   await protectedAncestors(privilegeGuard, paths, true);
   await protectedAncestors(await realpath(process.execPath), paths, true);
-  const worker = new NativeToolWorker({ ...options, ...paths, piPackageContext, privilegeGuard });
+  const worker = new NativeToolWorker({ ...options, ...paths, piPackageContext, privilegeGuard, toolProviderModule });
   try {
     process.setgid!(options.hostGid);
     process.setuid!(paths.hostUid);

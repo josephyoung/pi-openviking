@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+export type { WorkerToolProvider } from './worker-provider.js';
 
 export const nativeToolNames = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'] as const;
 export type NativeToolName = typeof nativeToolNames[number];
@@ -23,6 +24,8 @@ export interface WorkerOptions {
   operationTimeoutMs: number;
   maxConcurrentOperations: number;
   maxResultBytes: number;
+  /** Optional trusted host integration, validated inside the protected installation. */
+  toolProviderModule?: string;
 }
 interface Pending {
   resolve(value: unknown): void;
@@ -64,7 +67,7 @@ export class NativeToolWorker {
     // eventual host also retains no supplementary groups from root startup.
     process.setgroups!([]);
     this.#child = spawn(options.privilegeGuard, ['--no-new-privs', '--', process.execPath, fileURLToPath(new URL('./tool-worker-entry.js', import.meta.url)),
-      options.workspace, piEntry, String(options.maxResultBytes)], {
+      options.workspace, piEntry, String(options.maxResultBytes), options.toolProviderModule ?? ''], {
       cwd: options.workspace, uid: options.workerUid, gid: options.workerGid,
       env: { PATH: options.path, HOME: options.workspace, LANG: 'C.UTF-8' },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],

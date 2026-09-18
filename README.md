@@ -11,6 +11,22 @@ The Linux CLI now runs through the public pi entry; memory-enabled CLI acceptanc
 
 ## Implemented
 
+### Unreleased host worker integration
+
+The protected bootstrap accepts an optional `toolProviderModule` from its
+administrator-owned profile. This file must resolve inside the validated,
+worker-read-only installation. It exports `createWorkerTools({ workspace })`
+and returns the `WorkerToolProvider` contract exported by `./worker`.
+The factory runs only inside the unprivileged `no_new_privs` worker; host
+callbacks, credentials and environment are not provided. It handles the fixed
+native tool names and `user_bash`, with the same bounded IPC and cancellation.
+Invalid modules fail startup; execution errors never fall back to host tools.
+This allows a host to retain its own tool policies, such as Heimdall, inside
+the worker. It does not itself implement Dano's Heimdall adapter or multi-user
+supervisor, and is not part of the already-published 0.1.0 artifact.
+
+### Current capabilities
+
 - A Linux native-tool IPC worker with distinct UID, irreversible `no_new_privs`, explicit environment
   allowlist, kernel identity checks, bounded requests/results, streamed updates
   and cancellation. All seven native definitions and interactive `!`/`!!` shell

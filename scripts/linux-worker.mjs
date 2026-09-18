@@ -7,6 +7,7 @@ import { createIsolatedToolDefinitions, createIsolatedBashOperations } from '../
 assert.equal(process.platform, 'linux');
 assert.equal(process.getuid(), 0);
 const [hostUid, workerUid, groupId] = process.argv.slice(2, 5).map(Number);
+const toolProviderModule = process.argv[5];
 assert([hostUid, workerUid, groupId].every(id => Number.isSafeInteger(id) && id > 0));
 const root = await mkdtemp('/tmp/pi-memory-worker-');
 const workspace = join(root, 'workspace'), protectedDir = join(root, 'private');
@@ -28,6 +29,7 @@ process.env.MEMORY_SYNTHETIC_KEY = 'SYNTHETIC_PRIVATE_VALUE';
 const bootstrapOptions = { workspace, agentDir: protectedDir, stateDir: protectedDir,
   installationDir: '/app', hostGid: groupId, piPackageContext: fileURLToPath(new URL('../package.json', import.meta.url)), privilegeGuard: '/usr/bin/setpriv',
   hostUid, workerUid, workerGid: groupId, path: process.env.PATH,
+  toolProviderModule,
   startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 };
 const alternateInstallation = join(root, 'alternate-installation');
 await mkdir(alternateInstallation, { mode: 0o755 });
@@ -36,6 +38,7 @@ await rm(alternateInstallation, { recursive: true });
 const outsideContext = join(workspace, 'package.json');
 await writeFile(outsideContext, '{}');
 await assert.rejects(bootstrapProtectedWorker({ ...bootstrapOptions, piPackageContext: outsideContext }), /PI_CONTEXT_OUTSIDE/);
+await assert.rejects(bootstrapProtectedWorker({ ...bootstrapOptions, toolProviderModule: outsideContext }), /WORKER_PROVIDER_OUTSIDE/);
 assert.equal(process.getuid(), 0);
 const { worker } = await bootstrapProtectedWorker(bootstrapOptions);
 try {
@@ -55,6 +58,7 @@ try {
   await worker.execute('write', { path: 'allowed.txt', content: 'WORKSPACE_OK' });
   const read = await worker.execute('read', { path: 'allowed.txt' });
   assert(read.content.some(item => item.text?.includes('WORKSPACE_OK')));
+  if (toolProviderModule) assert.equal(read.details.workerProvider, true);
   for (const path of [credential, 'private-link/credential']) {
     await assert.rejects(worker.execute('read', { path }), /TOOL_FAILED/);
     await assert.rejects(worker.execute('write', { path, content: 'changed' }), /TOOL_FAILED/);
@@ -77,7 +81,7 @@ try {
   await new Promise(resolve => setTimeout(resolve, 1200));
   await assert.rejects(access(join(workspace, 'cancelled-native.txt')), { code: 'ENOENT' });
   await assert.rejects(access(join(workspace, 'cancelled-interactive.txt')), { code: 'ENOENT' });
-  console.log(JSON.stringify({ nativeWorker: true, protectedBootstrap: true, outsidePiContextRejected: true, workerOwnedReadonlyCodeRejected: true, noNewPrivileges: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
+  console.log(JSON.stringify({ nativeWorker: true, protectedBootstrap: true, customWorkerProvider: Boolean(toolProviderModule), outsideWorkerProviderRejected: true, outsidePiContextRejected: true, workerOwnedReadonlyCodeRejected: true, noNewPrivileges: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
     privateReadWriteEditDenied: true, symlinkDenied: true, credentialAbsentFromEnvironment: true,
     workspaceReadWrite: true, streamingUpdates: true, cancellation: true, finalLauncherVerified: false }));
 } finally {

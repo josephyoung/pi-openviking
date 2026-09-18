@@ -62,3 +62,26 @@ pi 0.85.1; operation
 All 38 automated tests and type checks passed. The actual installed dependency
 tree uses undici 8.9.0 and brace-expansion 5.0.9; the current audit has zero
 findings. This establishes the updated CLI combination, not Dano compatibility.
+# Unreleased worker-provider integration
+
+After 0.1.0 publication, the bootstrap gained an administrator-selected
+`toolProviderModule` seam for host tool policies. The module resolves inside
+the protected installation and executes after the worker UID/no_new_privs
+boundary, with workspace as its only factory input. Unit coverage is now
+41 passing tests, including symlink escape rejection and invalid-provider
+startup failure without native fallback.
+
+The fixed image `5df018612c20d15c3e97820b39e6209e676dc1f83bb61e66b2f5e3a77123e0ad`
+ran `scripts/linux-worker.mjs 1000 65534 1000
+/app/memory-extension/scripts/worker-test-provider.mjs` without networking.
+The custom provider marker was observed in actual tool results. Kernel checks,
+private absolute/symlink read/write/edit denial, absent credential environment,
+workspace I/O, streaming and cancellation all passed. Workspace-selected
+provider modules were rejected before privilege drop.
+
+A separate Bubblewrap compatibility probe used the existing Dano container
+capability profile. Creating `/dev/pts` failed under the no_new_privs tool UID;
+using Dano's existing bound `/dev` and read-only `/proc` configuration passed,
+both with and without an explicit user namespace. The command retained UID
+65534 and kernel `NoNewPrivs: 1`. This is primitive compatibility evidence,
+not acceptance of a completed Dano Heimdall adapter or multi-user supervisor.
