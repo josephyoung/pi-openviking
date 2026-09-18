@@ -65,7 +65,10 @@ export async function runProtectedPi(profile: LauncherProfile, args: readonly st
     const pi = await import(pathToFileURL(resolve(piRoot, manifest.exports['.'].import)).href);
     await pi.main(cliArgs, { extensionFactories: [{ name: 'openviking', factory: standard }] });
   } finally {
-    if (host) await host.scheduler.stop(profile.shutdownTimeoutMs);
-    worker.close();
+    try {
+      if (host && !await host.scheduler.stop(profile.shutdownTimeoutMs)) {
+        throw new Error('MEMORY_SHUTDOWN_INCOMPLETE');
+      }
+    } finally { worker.close(); }
   }
 }

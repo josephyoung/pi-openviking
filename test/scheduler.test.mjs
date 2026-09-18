@@ -83,3 +83,40 @@ test('owner mismatch is rejected and observer exceptions cannot kill delivery', 
   scheduler.start();
   await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'ready');
 });
+
+test('bounded stop reports unfinished persistence and an unbounded stop waits for its durable receipt', async t => {
+  const f = await setup(t);
+  let remoteResponded = false;
+  let writingReceipt = false;
+  let releaseWrite;
+  const heldWrite = new Promise(resolve => { releaseWrite = resolve; });
+  const store = {
+    owner: f.store.owner,
+    read: () => f.store.read(),
+    async transact(mutation) {
+      if (remoteResponded) { writingReceipt = true; await heldWrite; }
+      return f.store.transact(mutation);
+    },
+  };
+  f.transport.createSession = async () => { f.calls.push('create'); remoteResponded = true; };
+  const delivery = new MemoryDelivery({ store, transport: f.transport, maxPayloadBytes: 4096 });
+  const scheduler = new DeliveryScheduler({ ...f.options, store, delivery });
+  try {
+    scheduler.start();
+    await until(() => writingReceipt);
+    assert.equal((await f.store.read()).operations[f.operation.id].phase, 'session_unknown');
+    assert.equal(await scheduler.stop(0), false);
+    let drained = false;
+    const drain = scheduler.stop().then(result => { drained = true; return result; });
+    await sleep(20);
+    assert.equal(drained, false);
+    releaseWrite();
+    assert.equal(await drain, true);
+    assert.equal((await f.store.read()).operations[f.operation.id].phase, 'session_created');
+    assert.deepEqual(f.calls, ['create']);
+    assert.equal(await scheduler.stop(0), true);
+  } finally {
+    releaseWrite();
+    await scheduler.stop();
+  }
+});

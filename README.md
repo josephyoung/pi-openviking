@@ -190,6 +190,14 @@ counting requests. Token counting shares the recall deadline, and errors or a
 missing model omit recalled data while ordinary chat continues. The per-request
 cache is bound to the model identity; model changes require counting again.
 
+`scheduler.stop(timeoutMs)` stops new claims and returns `true` only when the
+active tick has settled, including its local receipt writes. `false` means the
+deadline elapsed; it does not cancel an already sent mutation or certify that
+the state directory can be removed. A host that must drain writes before
+releasing user resources can await `scheduler.stop()` without a deadline after
+settling its network client. The ordinary launcher reports
+`MEMORY_SHUTDOWN_INCOMPLETE` on a bounded stop timeout and still closes its worker.
+
 Print mode closes its scheduler/worker on return. Interactive pi emits its own
 shutdown hooks and exits; worker IPC disconnect terminates outstanding tool
 work. Delivery does not depend on an exit flush: the durable queue recovers on

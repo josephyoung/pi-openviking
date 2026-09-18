@@ -96,17 +96,21 @@ export class DeliveryScheduler {
     }
   }
 
-  /** Stop taking new work; already-claimed mutations retain their truthful receipts. */
-  async stop(waitMs: number): Promise<void> {
-    if (!Number.isSafeInteger(waitMs) || waitMs < 0) throw new Error('INVALID_MEMORY_SHUTDOWN_TIMEOUT');
+  /** Stop taking new work. Without a deadline, wait for the entire active tick,
+   * including local receipt writes. A bounded wait returns false if still busy;
+   * it is not a persistence fence and does not cancel a sent mutation. */
+  async stop(waitMs?: number): Promise<boolean> {
+    if (waitMs !== undefined && (!Number.isSafeInteger(waitMs) || waitMs < 0)) throw new Error('INVALID_MEMORY_SHUTDOWN_TIMEOUT');
     this.#active = false;
     this.#wakeRequested = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
-    if (!this.#running) return;
+    const running = this.#running;
+    if (!running) return true;
+    if (waitMs === undefined) { await running; return true; }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([this.#running, new Promise<void>(resolve => { timer = setTimeout(resolve, waitMs); })]);
+      return await Promise.race([running.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), waitMs); })]);
     } finally { if (timer) clearTimeout(timer); }
   }
 }
