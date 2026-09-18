@@ -15,6 +15,10 @@
     "./host": {
       "types": "./dist/host.d.ts",
       "import": "./dist/host.js"
+    },
+    "./worker": {
+      "types": "./dist/tool-worker.d.ts",
+      "import": "./dist/tool-worker.js"
     }
   },
   "files": [

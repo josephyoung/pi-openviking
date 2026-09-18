@@ -11,6 +11,9 @@ The Linux tool-worker launcher and product integration are still being implement
 
 ## Implemented
 
+- A Linux native-tool IPC worker with distinct UID, explicit environment
+  allowlist, kernel identity checks, bounded requests/results, streamed updates
+  and cancellation. Bootstrap integration is still required.
 - Immutable account/user binding and owner-checked private state files.
 - OS advisory locks, atomic replacement, file and directory fsync. The state
   contains delivery/consent metadata and pending payloads, not a second memory
@@ -85,3 +88,13 @@ and management, ordinary pi and real in-app Browser acceptance. Subsequent
   persisted state. This is one functional run, not the PRD performance sample.
 
 See `THIRD_PARTY_NOTICES.md` for distribution responsibilities.
+
+## Executed worker boundary
+
+`scripts/linux-worker.mjs` exercises the actual worker in a disposable root
+Linux container, with the three numeric identities supplied as arguments. The
+2026-09-18 run used pi 0.82.1 and Node 22.23.2: workspace read/write succeeded;
+absolute and symlink read/write/edit against the host-private credential failed;
+Bash inherited no synthetic memory key; updates and cancellation worked. The
+container used no network and was removed after the run. This verifies the
+worker primitive, not the final CLI/Dano launch and resource-discovery profile.
