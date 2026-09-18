@@ -5,7 +5,7 @@ An independent OpenViking memory extension for pi, tracked by
 
 **Implementation in progress. No package release or production activation yet.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
-against pi 0.82.1. The real pi loader loads both entries and keeps a single
+against pi 0.85.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
 The Linux CLI now runs through the public pi entry; memory-enabled CLI acceptance and product integration continue under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
 
@@ -92,7 +92,7 @@ and management, ordinary pi and real in-app Browser acceptance. Subsequent
 
 - OpenViking server: unmodified 0.4.20.
 - OpenViking TypeScript SDK: 0.1.0, exact dependency.
-- pi: 0.82.1, peer dependency (not bundled).
+- pi: 0.85.1, exact peer dependency (not bundled).
 - Local actual-adapter save: 2026-09-18, synthetic fact reached `ready` and was
   recalled after ~22.8 seconds. Every delivery step recreated the adapter from
   persisted state. This is one functional run, not the PRD performance sample.
@@ -140,7 +140,7 @@ The worker uses a configured absolute util-linux `setpriv` path to set
 `no_new_privs` before Node executes. Kernel `NoNewPrivs: 1` is checked alongside
 UID identity. The complete bootstrap primitive passed the real Linux worker
 fixture, including its tool/interactive-shell and cancellation checks. This
-is not yet the final CLI executable or multi-user Dano worker lifecycle.
+does not by itself establish the multi-user Dano worker lifecycle.
 
 ## Protected pi CLI
 
@@ -173,3 +173,18 @@ container; its `cli-test-host.mjs` deliberately leaves memory disabled and does
 not substitute for memory-enabled acceptance. Model credentials are copied to
 a private agent directory. Extra CA certificates must remain readable after
 host privilege drop; TLS verification stays enabled.
+
+## Release candidate validation
+
+The standard CLI RPC path has now passed explicit enable confirmation, real
+OpenViking save to `ready`, content/source inspection, new-session recall and
+pause. Automatic collection remains separately unapproved. This passed first
+on pi 0.82.1 and again with a fresh account on pi 0.85.1. See
+[the acceptance record](docs/acceptance-2026-09-18.md). Interactive TUI screenshots
+and Dano's real in-app Browser gate remain outstanding.
+
+The exact peer moved to pi 0.85.1 because pi 0.82.1's bundled shrinkwrap kept
+vulnerable transitive dependencies despite root overrides. The 0.85.1 install
+resolves undici 8.9.0 and brace-expansion 5.0.9; `npm audit` currently reports
+zero vulnerabilities. The package includes the Apache-2.0 license text needed
+for the unmodified OpenViking SDK.

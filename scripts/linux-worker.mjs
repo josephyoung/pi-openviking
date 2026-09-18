@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, chmod, chown, writeFile, readFile, symlink, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { bootstrapProtectedWorker, validateProtectedPaths } from '../dist/bootstrap.js';
 import { createIsolatedToolDefinitions, createIsolatedBashOperations } from '../dist/worker-tools.js';
 assert.equal(process.platform, 'linux');
@@ -25,7 +26,7 @@ await assert.rejects(validateProtectedPaths({ workspace, agentDir: protectedDir,
 await rm(unsafeInstall, { recursive: true });
 process.env.MEMORY_SYNTHETIC_KEY = 'SYNTHETIC_PRIVATE_VALUE';
 const bootstrapOptions = { workspace, agentDir: protectedDir, stateDir: protectedDir,
-  installationDir: '/app', hostGid: groupId, piPackageContext: '/app/package.json', privilegeGuard: '/usr/bin/setpriv',
+  installationDir: '/app', hostGid: groupId, piPackageContext: fileURLToPath(new URL('../package.json', import.meta.url)), privilegeGuard: '/usr/bin/setpriv',
   hostUid, workerUid, workerGid: groupId, path: process.env.PATH,
   startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 };
 const alternateInstallation = join(root, 'alternate-installation');

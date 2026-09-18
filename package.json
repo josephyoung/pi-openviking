@@ -37,7 +37,8 @@
     "dist",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "README.md"
+    "README.md",
+    "licenses"
   ],
   "pi": {
     "extensions": [
@@ -50,7 +51,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "0.82.1"
+    "@earendil-works/pi-coding-agent": "0.85.1"
   },
   "dependencies": {
     "@openviking/sdk": "0.1.0",
@@ -58,12 +59,23 @@
     "typebox": "1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@types/fs-ext": "2.0.3",
     "@types/node": "25.8.0",
     "typescript": "6.0.3"
   },
   "bin": {
     "pi-openviking": "./dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/josephyoung/pi-openviking.git"
+  },
+  "homepage": "https://github.com/josephyoung/pi-openviking#readme",
+  "bugs": {
+    "url": "https://github.com/josephyoung/pi-openviking/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

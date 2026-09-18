@@ -13,7 +13,7 @@ for (const name of ['agent', 'state', 'workspace']) {
   await chmod(path, name === 'workspace' ? 0o770 : 0o700);
 }
 const profile = { workspace: `${root}/workspace`, agentDir: `${root}/agent`, stateDir: `${root}/state`,
-  installationDir: '/app', piPackageContext: '/app/package.json', privilegeGuard: '/usr/bin/setpriv',
+  installationDir: '/app', piPackageContext: fileURLToPath(new URL('../package.json', import.meta.url)), privilegeGuard: '/usr/bin/setpriv',
   hostUid, hostGid: groupId, workerUid, workerGid: groupId, path: '/usr/local/bin:/usr/bin:/bin',
   startupTimeoutMs: 15000, operationTimeoutMs: 10000, maxConcurrentOperations: 4, maxResultBytes: 1048576,
   hostModule: fileURLToPath(new URL('./cli-test-host.mjs', import.meta.url)), shutdownTimeoutMs: 1000 };

@@ -7,7 +7,7 @@ import { DefaultResourceLoader, SettingsManager } from '@earendil-works/pi-codin
 import { createOpenVikingExtension, FileStateStore, protectedMemoryResources } from '../dist/host.js';
 import { bindStandardHost } from '../dist/standard.js';
 
-test('real pi 0.82.1 loads both published entry files and preserves single registration after reload', async t => {
+test('real pinned pi loads both published entry files and preserves single registration after reload', async t => {
   const root = await mkdtemp(join(tmpdir(), 'pi-memory-loader-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = join(root, 'workspace'), agentDir = join(root, 'agent');

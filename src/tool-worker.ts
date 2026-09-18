@@ -53,7 +53,10 @@ export class NativeToolWorker {
     const piRoot = join(dirname(options.piPackageContext), 'node_modules/@earendil-works/pi-coding-agent');
     const manifest = JSON.parse(readFileSync(join(piRoot, 'package.json'), 'utf8'));
     const entry = manifest.exports?.['.']?.import;
-    if (manifest.version !== '0.82.1' || typeof entry !== 'string' || !entry.startsWith('./')) {
+    const extensionManifest = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
+    const expectedPeer = extensionManifest.peerDependencies?.['@earendil-works/pi-coding-agent'];
+    if (!/^\d+\.\d+\.\d+$/.test(expectedPeer ?? '') || manifest.version !== expectedPeer
+        || typeof entry !== 'string' || !entry.startsWith('./')) {
       throw new Error('UNSUPPORTED_MEMORY_WORKER_PI');
     }
     const piEntry = resolve(piRoot, entry);
