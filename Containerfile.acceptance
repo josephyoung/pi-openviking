@@ -1,0 +1,9 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER 0
+RUN apt-get -o Acquire::http::Proxy=DIRECT -o Acquire::https::Proxy=DIRECT update && apt-get -o Acquire::http::Proxy=DIRECT -o Acquire::https::Proxy=DIRECT install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/memory-extension
+COPY package.json package-lock.json ./
+RUN env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy npm ci --omit=dev
+COPY dist ./dist
+COPY scripts ./scripts

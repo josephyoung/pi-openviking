@@ -27,6 +27,10 @@
     "./bootstrap": {
       "types": "./dist/bootstrap.d.ts",
       "import": "./dist/bootstrap.js"
+    },
+    "./launcher": {
+      "types": "./dist/launcher.d.ts",
+      "import": "./dist/launcher.js"
     }
   },
   "files": [
@@ -58,5 +62,8 @@
     "@types/fs-ext": "2.0.3",
     "@types/node": "25.8.0",
     "typescript": "6.0.3"
+  },
+  "bin": {
+    "pi-openviking": "./dist/cli.js"
   }
 }

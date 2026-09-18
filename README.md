@@ -7,7 +7,7 @@ An independent OpenViking memory extension for pi, tracked by
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
 against pi 0.82.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
-The Linux tool-worker launcher and product integration are still being implemented under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
+The Linux CLI now runs through the public pi entry; memory-enabled CLI acceptance and product integration continue under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
 
 ## Implemented
 
@@ -15,7 +15,7 @@ The Linux tool-worker launcher and product integration are still being implement
   allowlist, kernel identity checks, bounded requests/results, streamed updates
   and cancellation. All seven native definitions and interactive `!`/`!!` shell
   operations have worker proxies; the standard entry registers these proxies
-  with the memory extension. Bootstrap integration is still required.
+  with the memory extension. The protected CLI bootstraps and binds the worker.
 - Immutable account/user binding and owner-checked private state files. Before
   first data access, the authenticated health response must confirm the expected
   account, user and USER role; an HTTP 200 with missing identity is insufficient.
@@ -57,7 +57,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (36 tests in the current development run). It does not prove
+lifecycle behavior (38 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
@@ -83,7 +83,7 @@ from tool-writable paths. That launcher must be integrated and verified before
 activating memory in either pi or Dano. Current modules are not a substitute
 for that boundary.
 
-Further #474 gates: complete CLI bootstrap and Dano worker lifecycle integration,
+Further #474 gates: memory-enabled CLI acceptance and Dano worker lifecycle integration,
 credential isolation, Dano exact-version integration, authenticated settings
 and management, ordinary pi and real in-app Browser acceptance. Subsequent
 #475–477 work covers full collection/lifecycle/governance and release gates.
@@ -141,3 +141,35 @@ The worker uses a configured absolute util-linux `setpriv` path to set
 UID identity. The complete bootstrap primitive passed the real Linux worker
 fixture, including its tool/interactive-shell and cancellation checks. This
 is not yet the final CLI executable or multi-user Dano worker lifecycle.
+
+## Protected pi CLI
+
+`pi-openviking /etc/pi-openviking/profile.json [pi chat arguments]` starts the
+Linux worker, drops host privileges, loads a trusted host module and calls pi's
+public `main` entry with the standard extension factory. The profile and its
+ancestors must be root-owned and not group/other-writable. It contains bootstrap
+paths/IDs/limits, `hostModule`, `shutdownTimeoutMs` and optional
+`trustedSkillPaths`; it must contain no provider credentials. See the exported
+`LauncherProfile` type for required fields.
+
+The installed host module exports `createHost({ paths, assertToolIsolation })`
+and returns `{ memory, scheduler }`. It reads keys from the host-private root
+and supplies the selected model's exact tokenizer. It runs after privilege
+drop. Its source and approved Skill paths must be inside the protected
+installation. The CLI fixes private session storage and denies executable
+resource/trust overrides and package/config administration commands.
+
+Print mode closes its scheduler/worker on return. Interactive pi emits its own
+shutdown hooks and exits; worker IPC disconnect terminates outstanding tool
+work. Delivery does not depend on an exit flush: the durable queue recovers on
+the next launch. A container supervisor must terminate the entire process tree
+on abrupt host termination.
+
+The 2026-09-18 Linux run used the real configured model through pi 0.82.1:
+Bash wrote `cli-proof.txt`, read returned its content, and the file belonged to
+the separate worker UID. Workspace extension discovery was denied and the CLI
+exited normally. `scripts/linux-cli.mjs` reproduces this in a disposable root
+container; its `cli-test-host.mjs` deliberately leaves memory disabled and does
+not substitute for memory-enabled acceptance. Model credentials are copied to
+a private agent directory. Extra CA certificates must remain readable after
+host privilege drop; TLS verification stays enabled.
