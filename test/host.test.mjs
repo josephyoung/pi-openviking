@@ -13,14 +13,16 @@ async function setup(t, policy = {}) {
   const result = { requests: 0, isolated: true };
   const client = { owner, async recall() { result.requests++; return [{ uri: 'viking://user/alice/memories/fact.md', text: 'Use Chinese.', score: 0.9 }]; } };
   const handlers = new Map(), tools = new Map();
-  const pi = { on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool) };
+  const context = { model: { id: 'fixture-model', provider: 'fixture', api: 'openai-completions' } };
+  const pi = { on: (name, handler) => handlers.set(name, name === 'context'
+    ? event => handler(event, context) : handler), registerTool: tool => tools.set(tool.name, tool) };
   const options = { owner, client, stateStore, assertToolIsolation: async () => { if (!result.isolated) throw new Error('no worker'); },
     policy: { maxPayloadBytes: 8192, recallTimeoutMs: 50, recallTokenBudget: 1000, recallLimit: 5, minimumScore: 0.5,
       countTokens: text => text.length, ...policy }, wakeDelivery() {} };
   const factory = createOpenVikingExtension(options);
   factory(pi);
   const service = new MemoryDelivery({ store: stateStore, transport: client, maxPayloadBytes: 8192 });
-  return { options, factory, pi, handlers, tools, stateStore, service, result, client };
+  return { options, factory, pi, handlers, tools, stateStore, service, result, client, context };
 }
 const messages = [{ role: 'user', content: 'Design a feature.', timestamp: Date.now() }];
 
@@ -92,4 +94,49 @@ test('a disabled save intent cannot automatically execute after enabling; a new 
   timestamp = new Date(Date.now() + 1).toISOString();
   assert.equal((await save()).details.status, 'queued');
   assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
+});
+
+test('model switches recount the same request and cannot reuse another tokenizer budget', async t => {
+  const counted = [];
+  const f = await setup(t, { countTokens: async (text, { model, signal }) => {
+    assert.equal(signal.aborted, false);
+    counted.push(model);
+    return model.id === 'fixture-model' ? 1 : 1001;
+  } });
+  await f.service.enable('v1');
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  const first = await f.handlers.get('context')({ messages });
+  assert.equal(first.messages.length, 2);
+  f.context.model = { ...f.context.model, id: 'another-model' };
+  const next = await f.handlers.get('context')({ messages: first.messages });
+  assert.deepEqual(next.messages, messages);
+  assert.deepEqual(counted.map(model => model.id), ['fixture-model', 'another-model']);
+  assert.equal(f.result.requests, 2);
+});
+
+test('a model change during token counting discards the old result', async t => {
+  const f = await setup(t, { countTokens: async () => {
+    f.context.model = { ...f.context.model, id: 'changed-during-count' };
+    return 1;
+  } });
+  await f.service.enable('v1');
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+});
+
+test('missing models, tokenizer errors and slow counters degrade without injecting memories', async t => {
+  const missing = await setup(t);
+  await missing.service.enable('v1');
+  missing.handlers.get('before_agent_start')({ prompt: 'query' });
+  missing.context.model = undefined;
+  assert.deepEqual((await missing.handlers.get('context')({ messages })).messages, messages);
+  assert.equal(missing.result.requests, 0);
+  for (const countTokens of [async () => { throw new Error('unsupported tokenizer'); }, () => new Promise(() => {})]) {
+    const f = await setup(t, { countTokens });
+    await f.service.enable('v1');
+    f.handlers.get('before_agent_start')({ prompt: 'query' });
+    const started = Date.now();
+    assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+    assert(Date.now() - started < 500);
+  }
 });

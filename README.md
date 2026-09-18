@@ -182,6 +182,14 @@ drop. Its source and approved Skill paths must be inside the protected
 installation. The CLI fixes private session storage and denies executable
 resource/trust overrides and package/config administration commands.
 
+The tokenizer callback is `countTokens(text, { model, signal })`, where `model`
+contains the active pi model's `provider`, `api` and `id`. It may return a number
+or a promise. Select the exact tokenizer using that identity; reject unsupported
+models instead of estimating with character counts. Honor `signal` for remote
+counting requests. Token counting shares the recall deadline, and errors or a
+missing model omit recalled data while ordinary chat continues. The per-request
+cache is bound to the model identity; model changes require counting again.
+
 Print mode closes its scheduler/worker on return. Interactive pi emits its own
 shutdown hooks and exits; worker IPC disconnect terminates outstanding tool
 work. Delivery does not depend on an exit flush: the durable queue recovers on
