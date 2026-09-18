@@ -1,0 +1,130 @@
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { flock } from 'fs-ext';
+import { checkedOwner, sameOwner, type Owner, type OwnerState, type StateStore } from './types.js';
+
+async function lock(fd: number, operation: 'ex' | 'un'): Promise<void> {
+  // Blocking flock consumes a libuv worker: enough waiting writers can starve
+  // the current holder's fsync. Nonblocking acquisition keeps that pool free.
+  for (;;) {
+    try {
+      await new Promise<void>((accept, reject) => flock(fd, operation === 'ex' ? 'exnb' : 'un',
+        error => error ? reject(error) : accept()));
+      return;
+    } catch (error) {
+      if (operation !== 'ex' || !['EAGAIN', 'EWOULDBLOCK'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+}
+
+function verify(state: OwnerState, owner: Owner): void {
+  if (state?.version !== 1 || !state.owner || !sameOwner(state.owner, owner)
+      || !Number.isSafeInteger(state.revision) || state.revision < 0
+      || !state.authorization || typeof state.authorization.enabled !== 'boolean'
+      || typeof state.authorization.automaticCollection !== 'boolean'
+      || !Number.isSafeInteger(state.authorization.epoch)
+      || !state.operations || Array.isArray(state.operations)) {
+    throw new Error('INVALID_MEMORY_STATE');
+  }
+  for (const [id, operation] of Object.entries(state.operations)) {
+    if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
+      throw new Error('MEMORY_OWNER_MISMATCH');
+    }
+  }
+}
+
+/** The directory must be outside tool access; permissions alone are not a sandbox. */
+export class FileStateStore implements StateStore {
+  readonly owner: Owner;
+  readonly #directory: string;
+  readonly #policyVersion: string;
+
+  constructor(options: { owner: Owner; directory: string; policyVersion: string }) {
+    this.owner = checkedOwner(options.owner);
+    this.#directory = resolve(options.directory);
+    if (!options.policyVersion) throw new Error('MISSING_POLICY_VERSION');
+    this.#policyVersion = options.policyVersion;
+  }
+
+  async #prepare(): Promise<void> {
+    // Do not follow a final-component symlink or relax an existing directory.
+    await mkdir(this.#directory, { mode: 0o700, recursive: true });
+    const metadata = await lstat(this.#directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()
+        || (metadata.mode & 0o077) !== 0
+        || metadata.uid !== process.getuid?.()) throw new Error('UNPROTECTED_MEMORY_STATE');
+  }
+
+  async #load(): Promise<OwnerState> {
+    let file;
+    try {
+      file = await open(join(this.#directory, 'state.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('MEMORY_STATE_UNREADABLE');
+      return {
+        version: 1, owner: this.owner, revision: 0,
+        authorization: { enabled: false, automaticCollection: false, epoch: 0,
+          effectiveAt: new Date().toISOString(), policyVersion: this.#policyVersion },
+        operations: {},
+      };
+    }
+    try {
+      const metadata = await file.stat();
+      if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.uid !== process.getuid?.()) {
+        throw new Error('UNPROTECTED_MEMORY_STATE');
+      }
+      const state = JSON.parse(await file.readFile('utf8')) as OwnerState;
+      verify(state, this.owner);
+      return state;
+    } finally { await file.close(); }
+  }
+
+  async #write(state: OwnerState): Promise<void> {
+    verify(state, this.owner);
+    const temporary = join(this.#directory, `.state-${randomUUID()}`);
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(JSON.stringify(state));
+      await file.sync();
+    } finally { await file.close(); }
+    try {
+      await rename(temporary, join(this.#directory, 'state.json'));
+      const directory = await open(this.#directory, constants.O_RDONLY);
+      try { await directory.sync(); } finally { await directory.close(); }
+    } finally { await rm(temporary, { force: true }); }
+  }
+
+  async #locked<T>(action: () => Promise<T>): Promise<T> {
+    await this.#prepare();
+    const file = await open(join(this.#directory, 'state.lock'),
+      constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    try {
+      const metadata = await file.stat();
+      if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.uid !== process.getuid?.()) {
+        throw new Error('UNPROTECTED_MEMORY_LOCK');
+      }
+      await lock(file.fd, 'ex');
+      try { return await action(); } finally { await lock(file.fd, 'un'); }
+    } finally { await file.close(); }
+  }
+
+  read(): Promise<OwnerState> {
+    return this.#locked(() => this.#load());
+  }
+
+  transact<T>(mutation: (state: OwnerState) => T): Promise<T> {
+    return this.#locked(async () => {
+      const state = await this.#load();
+      const result = mutation(state);
+      if (result && typeof (result as { then?: unknown }).then === 'function') {
+        throw new Error('ASYNC_MEMORY_TRANSACTION');
+      }
+      state.revision++;
+      await this.#write(state);
+      return result;
+    });
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "@josephyoung/pi-openviking",
+  "version": "0.1.0",
+  "description": "Owner-bound OpenViking memory extension for pi",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/standard.d.ts",
+      "import": "./dist/standard.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/standard.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1"
+  },
+  "dependencies": {
+    "@openviking/sdk": "0.1.0",
+    "fs-ext": "2.1.1"
+  },
+  "devDependencies": {
+    "@types/fs-ext": "2.0.3",
+    "@types/node": "25.8.0",
+    "typescript": "6.0.3",
+    "@earendil-works/pi-coding-agent": "0.82.1"
+  }
+}
