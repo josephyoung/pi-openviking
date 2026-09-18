@@ -3,7 +3,7 @@
 An independent OpenViking memory extension for pi, tracked by
 [Dano #465](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/465).
 
-**Implementation in progress. No package release or production activation yet.**
+**Implementation in progress. Version 0.1.0 is published; production activation remains pending.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
 against pi 0.85.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
@@ -188,3 +188,17 @@ vulnerable transitive dependencies despite root overrides. The 0.85.1 install
 resolves undici 8.9.0 and brace-expansion 5.0.9; `npm audit` currently reports
 zero vulnerabilities. The package includes the Apache-2.0 license text needed
 for the unmodified OpenViking SDK.
+## Automated npm releases
+
+Changes to the root `package.json` version on `main` trigger
+`.github/workflows/publish.yml`. The workflow checks the version against the
+pre-push commit, skips versions already present on npm, then installs locked
+dependencies, type-checks, builds, tests and publishes with provenance.
+Use `npm version patch --no-git-tag-version` (or a deliberate minor/prerelease
+version) and commit both package manifests. Stable versions use `latest`;
+prereleases use `next`. A manual Actions run can retry an unpublished version.
+
+Publishing uses npm Trusted Publishing bound to `josephyoung/pi-openviking`
+and workflow filename `publish.yml`, with permission to publish. No npm token
+is stored in GitHub secrets. The trust relationship must be configured on npm
+before the first automated release.
