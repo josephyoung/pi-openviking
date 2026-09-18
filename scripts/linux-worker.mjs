@@ -28,6 +28,10 @@ const bootstrapOptions = { workspace, agentDir: protectedDir, stateDir: protecte
   installationDir: '/app', hostGid: groupId, piPackageContext: '/app/package.json', privilegeGuard: '/usr/bin/setpriv',
   hostUid, workerUid, workerGid: groupId, path: process.env.PATH,
   startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 };
+const alternateInstallation = join(root, 'alternate-installation');
+await mkdir(alternateInstallation, { mode: 0o755 });
+await assert.rejects(bootstrapProtectedWorker({ ...bootstrapOptions, installationDir: alternateInstallation }), /EXTENSION_OUTSIDE/);
+await rm(alternateInstallation, { recursive: true });
 const outsideContext = join(workspace, 'package.json');
 await writeFile(outsideContext, '{}');
 await assert.rejects(bootstrapProtectedWorker({ ...bootstrapOptions, piPackageContext: outsideContext }), /PI_CONTEXT_OUTSIDE/);

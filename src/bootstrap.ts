@@ -1,6 +1,7 @@
 import { lstat, realpath, readdir } from 'node:fs/promises';
 import { dirname, relative, isAbsolute } from 'node:path';
 import type { Stats } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { NativeToolWorker, type WorkerOptions } from './tool-worker.js';
 
 export interface ProtectedPaths {
@@ -90,6 +91,8 @@ export async function bootstrapProtectedWorker(options: ProtectedPaths & Omit<Wo
   if (process.platform !== 'linux' || process.getuid?.() !== 0
       || !Number.isSafeInteger(options.hostGid) || options.hostGid <= 0) throw new Error('PRIVILEGED_LINUX_BOOTSTRAP_REQUIRED');
   const paths = await validateProtectedPaths(options);
+  const extensionEntry = await realpath(fileURLToPath(import.meta.url));
+  if (!contains(paths.installationDir, extensionEntry)) throw new Error('EXTENSION_OUTSIDE_PROTECTED_INSTALLATION');
   const piPackageContext = await realpath(options.piPackageContext);
   if (!contains(paths.installationDir, piPackageContext) || !(await lstat(piPackageContext)).isFile()) {
     throw new Error('PI_CONTEXT_OUTSIDE_PROTECTED_INSTALLATION');
