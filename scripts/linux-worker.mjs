@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, chmod, chown, writeFile, readFile, symlink, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { NativeToolWorker } from '../dist/tool-worker.js';
+import { bootstrapProtectedWorker, validateProtectedPaths } from '../dist/bootstrap.js';
 import { createIsolatedToolDefinitions, createIsolatedBashOperations } from '../dist/worker-tools.js';
 assert.equal(process.platform, 'linux');
 assert.equal(process.getuid(), 0);
@@ -15,11 +15,19 @@ await mkdir(protectedDir, { mode: 0o700 }); await chown(protectedDir, hostUid, g
 const credential = join(protectedDir, 'credential');
 await writeFile(credential, 'SYNTHETIC_PRIVATE_VALUE', { mode: 0o600 }); await chown(credential, hostUid, groupId);
 await symlink(protectedDir, join(workspace, 'private-link'));
+const unsafeInstall = join(root, 'unsafe-install');
+await mkdir(unsafeInstall, { mode: 0o755 });
+const workerOwnedCode = join(unsafeInstall, 'readonly.js');
+await writeFile(workerOwnedCode, 'export default 1', { mode: 0o444 });
+await chown(workerOwnedCode, workerUid, groupId);
+await assert.rejects(validateProtectedPaths({ workspace, agentDir: protectedDir, stateDir: protectedDir,
+  installationDir: unsafeInstall, hostUid, workerUid, workerGid: groupId }), /REPLACE_PROTECTED/);
+await rm(unsafeInstall, { recursive: true });
 process.env.MEMORY_SYNTHETIC_KEY = 'SYNTHETIC_PRIVATE_VALUE';
-const worker = new NativeToolWorker({ workspace, piPackageContext: '/app/package.json',
+const { worker } = await bootstrapProtectedWorker({ workspace, agentDir: protectedDir, stateDir: protectedDir,
+  installationDir: '/app', hostGid: groupId, piPackageContext: '/app/package.json', privilegeGuard: '/usr/bin/setpriv',
   hostUid, workerUid, workerGid: groupId, path: process.env.PATH,
   startupTimeoutMs: 10000, operationTimeoutMs: 5000, maxConcurrentOperations: 4, maxResultBytes: 1024 * 1024 });
-process.setgid(groupId); process.setuid(hostUid);
 try {
   await worker.assertIsolated();
   const definitions = createIsolatedToolDefinitions(worker);
@@ -59,7 +67,7 @@ try {
   await new Promise(resolve => setTimeout(resolve, 1200));
   await assert.rejects(access(join(workspace, 'cancelled-native.txt')), { code: 'ENOENT' });
   await assert.rejects(access(join(workspace, 'cancelled-interactive.txt')), { code: 'ENOENT' });
-  console.log(JSON.stringify({ nativeWorker: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
+  console.log(JSON.stringify({ nativeWorker: true, protectedBootstrap: true, workerOwnedReadonlyCodeRejected: true, noNewPrivileges: true, toolProxies: true, interactiveShell: true, hostUid, workerUid,
     privateReadWriteEditDenied: true, symlinkDenied: true, credentialAbsentFromEnvironment: true,
     workspaceReadWrite: true, streamingUpdates: true, cancellation: true, finalLauncherVerified: false }));
 } finally {

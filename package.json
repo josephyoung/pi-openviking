@@ -23,6 +23,10 @@
     "./worker-tools": {
       "types": "./dist/worker-tools.d.ts",
       "import": "./dist/worker-tools.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap.d.ts",
+      "import": "./dist/bootstrap.js"
     }
   },
   "files": [

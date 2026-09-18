@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
@@ -13,6 +13,8 @@ export interface WorkerOptions {
   workspace: string;
   /** Protected installation's package.json; never supplied by the model. */
   piPackageContext: string;
+  /** Trusted util-linux setpriv executable, used to make privilege gain irreversible. */
+  privilegeGuard: string;
   workerUid: number;
   workerGid: number;
   hostUid: number;
@@ -38,7 +40,7 @@ export class NativeToolWorker {
   #closed = false;
 
   constructor(options: WorkerOptions) {
-    if (process.platform !== 'linux' || process.getuid?.() !== 0
+    if (process.platform !== 'linux' || process.getuid?.() !== 0 || !isAbsolute(options.privilegeGuard)
         || ![options.workerUid, options.workerGid, options.hostUid].every(id => Number.isSafeInteger(id) && id > 0)
         || options.workerUid === options.hostUid
         || ![options.startupTimeoutMs, options.operationTimeoutMs, options.maxConcurrentOperations, options.maxResultBytes]
@@ -58,7 +60,7 @@ export class NativeToolWorker {
     // Clear supplementary bootstrap groups before creating the worker. The
     // eventual host also retains no supplementary groups from root startup.
     process.setgroups!([]);
-    this.#child = spawn(process.execPath, [fileURLToPath(new URL('./tool-worker-entry.js', import.meta.url)),
+    this.#child = spawn(options.privilegeGuard, ['--no-new-privs', '--', process.execPath, fileURLToPath(new URL('./tool-worker-entry.js', import.meta.url)),
       options.workspace, piEntry, String(options.maxResultBytes)], {
       cwd: options.workspace, uid: options.workerUid, gid: options.workerGid,
       env: { PATH: options.path, HOME: options.workspace, LANG: 'C.UTF-8' },
@@ -126,6 +128,7 @@ export class NativeToolWorker {
     }
     // Independently inspect kernel identity, not a self-reported config flag.
     const status = await readFile(`/proc/${this.#child.pid}/status`, 'utf8');
+    if (!/^NoNewPrivs:\s+1$/m.test(status)) throw new Error('MEMORY_WORKER_PRIVILEGE_GAIN_ALLOWED');
     const uids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/m.exec(status);
     if (!uids || uids.slice(1).some(uid => Number(uid) !== this.#options.workerUid)) throw new Error('MEMORY_WORKER_IDENTITY_MISMATCH');
   }

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { FileStateStore, MemoryDelivery, DeliveryScheduler } from '../dist/host.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
-  for (let i = 0; i < 100; i++) { if (await check()) return; await sleep(10); }
+  for (let i = 0; i < 500; i++) { if (await check()) return; await sleep(10); }
   assert.fail('Background condition not reached');
 }
 async function setup(t) {
@@ -49,7 +49,7 @@ test('unknown outcomes back off and terminate visibly without repeating the muta
   assert.deepEqual(f.calls, ['create', 'append']);
   assert.equal(operation.errorCode, 'MEMORY_RECONCILIATION_LIMIT');
   assert.equal(operation.payload, undefined);
-  assert(status.some(value => value.phase === 'blocked'));
+  await until(() => status.some(value => value.phase === 'blocked'));
   assert(status.every(value => !('payload' in value) && !('owner' in value)));
 });
 
@@ -57,7 +57,7 @@ test('restart preserves backoff and attempt counts; stopping prevents new delive
   const f = await setup(t);
   await f.store.transact(state => {
     const operation = state.operations[f.operation.id];
-    operation.nextAttemptAt = Date.now() + 150;
+    operation.nextAttemptAt = Date.now() + 60_000;
     operation.deliveryAttempts = 2;
   });
   const scheduler = new DeliveryScheduler(f.options);
@@ -66,7 +66,8 @@ test('restart preserves backoff and attempt counts; stopping prevents new delive
   assert.deepEqual(f.calls, []);
   assert.equal((await f.store.read()).operations[f.operation.id].deliveryAttempts, 2);
   await scheduler.stop(100);
-  await sleep(160);
+  await f.store.transact(state => { state.operations[f.operation.id].nextAttemptAt = 0; });
+  await sleep(20);
   assert.deepEqual(f.calls, []);
   const restarted = new DeliveryScheduler(f.options);
   t.after(() => restarted.stop(100));

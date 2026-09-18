@@ -11,7 +11,7 @@ The Linux tool-worker launcher and product integration are still being implement
 
 ## Implemented
 
-- A Linux native-tool IPC worker with distinct UID, explicit environment
+- A Linux native-tool IPC worker with distinct UID, irreversible `no_new_privs`, explicit environment
   allowlist, kernel identity checks, bounded requests/results, streamed updates
   and cancellation. All seven native definitions and interactive `!`/`!!` shell
   operations have worker proxies; the standard entry registers these proxies
@@ -57,7 +57,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (31 tests in the current development run). It does not prove
+lifecycle behavior (36 tests in the current development run). It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
@@ -125,3 +125,19 @@ The Linux worker integration now exercises the registered tool proxies and
 interactive shell, preserving streaming and exit codes. Both cancellation
 paths are checked for absence of a delayed file write, rather than only testing
 that the caller receives a cancellation error.
+
+## Protected bootstrap primitive
+
+`bootstrapProtectedWorker` validates canonical workspace, private agent/state
+roots and a protected installation tree before starting the worker and dropping
+bootstrap UID/GID. It rejects workspace overlap, replaceable ancestors,
+worker-writable code, and installation symlinks escaping the installation root.
+Private directories must already belong to the configured host UID with no
+group/other permissions. Provisioning is explicit; this function never widens
+permissions or repairs arbitrary paths.
+
+The worker uses a configured absolute util-linux `setpriv` path to set
+`no_new_privs` before Node executes. Kernel `NoNewPrivs: 1` is checked alongside
+UID identity. The complete bootstrap primitive passed the real Linux worker
+fixture, including its tool/interactive-shell and cancellation checks. This
+is not yet the final CLI executable or multi-user Dano worker lifecycle.
