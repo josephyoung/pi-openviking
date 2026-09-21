@@ -29,9 +29,25 @@ function verify(state: OwnerState, owner: Owner): void {
       || !state.operations || Array.isArray(state.operations)) {
     throw new Error('INVALID_MEMORY_STATE');
   }
+  const consent = state.authorization.collectionConsent;
+  if ((state.authorization.automaticCollection && !consent) || (consent !== undefined && (!consent
+      || !Number.isSafeInteger(consent.revision) || consent.revision < 1
+      || typeof consent.policyVersion !== 'string' || !consent.policyVersion.trim()
+      || typeof consent.effectiveAt !== 'string' || !Number.isFinite(Date.parse(consent.effectiveAt))
+      || (consent.scope !== null && (typeof consent.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(consent.scope)))
+      || !Array.isArray(consent.boundaries) || consent.boundaries.some(boundary => !boundary
+        || typeof boundary.sessionId !== 'string' || !boundary.sessionId
+        || ![boundary.entryId, boundary.branchId].every(id => id === null || (typeof id === 'string' && id.length > 0)))
+      || new Set(consent.boundaries.map(boundary => boundary.sessionId)).size !== consent.boundaries.length))) {
+    throw new Error('INVALID_COLLECTION_CONSENT');
+  }
   for (const [id, operation] of Object.entries(state.operations)) {
     if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
       throw new Error('MEMORY_OWNER_MISMATCH');
+    }
+    if (!['explicit', 'automatic'].includes(operation.kind) || (operation.kind === 'automatic'
+      && (!Number.isSafeInteger(operation.collectionRevision) || operation.collectionRevision! < 1))) {
+      throw new Error('INVALID_MEMORY_OPERATION');
     }
   }
 }

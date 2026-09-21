@@ -168,3 +168,21 @@ test('missing models, tokenizer errors and slow counters degrade without injecti
     assert(Date.now() - started < 500);
   }
 });
+
+test('explicit save cannot adopt a new authorization after its source check', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const timestamp = new Date(Date.now() + 1).toISOString();
+  const original = f.stateStore.read.bind(f.stateStore);
+  f.stateStore.read = async () => {
+    const snapshot = await original();
+    await f.service.pause();
+    await f.service.enable('v1');
+    return snapshot;
+  };
+  const result = await f.tools.get('memory_save').execute('call', { content: 'fact' }, undefined, undefined,
+    { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
+      message: { role: 'user', content: 'remember this fact' } }] } });
+  assert.equal(result.details.errorCode, 'MEMORY_CONFIRM_AGAIN');
+  assert.deepEqual((await original()).operations, {});
+});

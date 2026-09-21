@@ -9,6 +9,22 @@ export interface Authorization {
   epoch: number;
   effectiveAt: string;
   policyVersion: string;
+  collectionConsent?: CollectionConsent;
+}
+
+/** Stable pi entries observed by the trusted host at the authorization boundary. */
+export interface CollectionBoundary {
+  sessionId: string;
+  entryId: string | null;
+  branchId: string | null;
+}
+
+export interface CollectionConsent {
+  revision: number;
+  effectiveAt: string;
+  policyVersion: string;
+  scope: string | null;
+  boundaries: CollectionBoundary[];
 }
 
 export type DeliveryPhase =
@@ -28,8 +44,9 @@ export interface Operation {
   owner: Owner;
   scope: string | null;
   source: Source;
-  kind: 'explicit';
+  kind: 'explicit' | 'automatic';
   authorizationEpoch: number;
+  collectionRevision?: number;
   createdAt: string;
   updatedAt: string;
   phase: DeliveryPhase;

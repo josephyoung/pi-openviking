@@ -58,3 +58,17 @@ test('rejects symlink state and asynchronous mutations', async t => {
   await symlink(target, join(options.directory, 'state.json'));
   await assert.rejects(store.read(), /MEMORY_STATE_UNREADABLE/);
 });
+
+test('automatic consent without its durable policy boundary is rejected without repairing state', async t => {
+  const options = await fixture(t);
+  const store = new FileStateStore(options);
+  await store.transact(() => {});
+  const state = await store.read();
+  state.authorization.automaticCollection = true;
+  const invalid = JSON.stringify(state);
+  const file = join(options.directory, 'state.json');
+  await writeFile(file, invalid);
+  await assert.rejects(store.read(), /INVALID_COLLECTION_CONSENT/);
+  const { readFile } = await import('node:fs/promises');
+  assert.equal(await readFile(file, 'utf8'), invalid);
+});

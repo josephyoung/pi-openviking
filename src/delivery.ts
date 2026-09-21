@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { checkedOwner, sameOwner, type Operation, type Owner, type Source, type StateStore } from './types.js';
+import { checkedOwner, sameOwner, type CollectionBoundary, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
 
 /** Each method is owner-bound. Reconciliation never mutates the service. */
 export interface DeliveryTransport {
@@ -20,6 +20,36 @@ export interface DeliveryTransport {
 const terminal = new Set(['ready', 'failed', 'blocked_by_pause', 'blocked']);
 const unsent = new Set(['queued', 'session_created', 'message_delivered']);
 
+function maySend(state: OwnerState, operation: Operation): boolean {
+  const authorization = state.authorization;
+  return authorization.enabled && authorization.epoch === operation.authorizationEpoch
+    && (operation.kind === 'explicit' || (authorization.automaticCollection
+      && authorization.collectionConsent !== undefined
+      && authorization.collectionConsent.revision === operation.collectionRevision
+      && authorization.collectionConsent.scope === operation.scope));
+}
+function blockUnsent(state: OwnerState): void {
+  for (const operation of Object.values(state.operations)) {
+    if (unsent.has(operation.phase) && !maySend(state, operation)) {
+      operation.phase = 'blocked_by_pause';
+      delete operation.payload;
+      operation.updatedAt = new Date().toISOString();
+    }
+  }
+}
+function validateBoundary(policyVersion: string, boundaries: CollectionBoundary[]): void {
+  if (typeof policyVersion !== 'string' || !policyVersion.trim()) throw new Error('MISSING_POLICY_VERSION');
+  if (!Array.isArray(boundaries) || boundaries.some(boundary => !boundary
+    || typeof boundary.sessionId !== 'string' || !boundary.sessionId
+    || ![boundary.entryId, boundary.branchId].every(id => id === null || (typeof id === 'string' && id.length > 0)))
+    || new Set(boundaries.map(boundary => boundary.sessionId)).size !== boundaries.length) {
+    throw new Error('INVALID_COLLECTION_BOUNDARY');
+  }
+}
+function validateScope(scope: string | null): void {
+  if (scope !== null && !/^[A-Za-z0-9_-]{1,128}$/.test(scope)) throw new Error('INVALID_MEMORY_SCOPE');
+}
+
 export class MemoryDelivery {
   readonly #store: StateStore;
   readonly #transport: DeliveryTransport;
@@ -36,11 +66,21 @@ export class MemoryDelivery {
 
   get owner(): Owner { return this.#store.owner; }
 
-  async enable(policyVersion: string): Promise<void> {
-    if (!policyVersion) throw new Error('MISSING_POLICY_VERSION');
+  async enable(policyVersion: string, boundaries: CollectionBoundary[] = []): Promise<void> {
+    validateBoundary(policyVersion, boundaries);
     await this.#store.transact(state => {
-      state.authorization = { enabled: true, automaticCollection: false,
-        epoch: state.authorization.epoch + 1, effectiveAt: new Date().toISOString(), policyVersion };
+      const previous = state.authorization;
+      const effectiveAt = new Date().toISOString();
+      state.authorization = { ...previous, enabled: true,
+        epoch: previous.epoch + 1, effectiveAt, policyVersion };
+      // Resuming memory does not revoke a separate consent. It does establish
+      // a new boundary: old automatic work cannot inherit the resumed policy.
+      if (previous.automaticCollection && previous.collectionConsent) {
+        state.authorization.collectionConsent = { ...previous.collectionConsent,
+          revision: previous.collectionConsent.revision + 1, effectiveAt, policyVersion,
+          boundaries: structuredClone(boundaries) };
+      }
+      blockUnsent(state);
     });
   }
 
@@ -49,28 +89,69 @@ export class MemoryDelivery {
       state.authorization.enabled = false;
       state.authorization.epoch++;
       state.authorization.effectiveAt = new Date().toISOString();
-      for (const operation of Object.values(state.operations)) {
-        if (unsent.has(operation.phase)) {
-          operation.phase = 'blocked_by_pause';
-          delete operation.payload;
-          operation.updatedAt = new Date().toISOString();
-        }
-      }
+      blockUnsent(state);
     });
   }
 
-  async save(source: Source, content: string, scope: string | null = null): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
+  /** Only trusted, authenticated management code may grant collection consent. */
+  async authorizeCollection(options: { policyVersion: string; scope: string | null; boundaries: CollectionBoundary[] }): Promise<void> {
+    validateBoundary(options.policyVersion, options.boundaries);
+    validateScope(options.scope);
+    await this.#store.transact(state => {
+      if (!state.authorization.enabled) throw new Error('MEMORY_DISABLED');
+      state.authorization.collectionConsent = {
+        revision: (state.authorization.collectionConsent?.revision ?? 0) + 1,
+        effectiveAt: new Date().toISOString(), policyVersion: options.policyVersion,
+        scope: options.scope, boundaries: structuredClone(options.boundaries),
+      };
+      state.authorization.automaticCollection = true;
+      blockUnsent(state);
+    });
+  }
+
+  async revokeCollection(): Promise<void> {
+    await this.#store.transact(state => {
+      state.authorization.automaticCollection = false;
+      if (state.authorization.collectionConsent) {
+        state.authorization.collectionConsent.revision++;
+        state.authorization.collectionConsent.effectiveAt = new Date().toISOString();
+      }
+      blockUnsent(state);
+    });
+  }
+
+  async save(source: Source, content: string, scope: string | null = null, expectedEpoch?: number): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
+    return this.#enqueue(source, content, scope, 'explicit', expectedEpoch);
+  }
+
+  /** Collect only against the policy captured for this source, never latest consent. */
+  async collect(source: Source, content: string, policy: { epoch: number; collectionRevision: number }, scope: string | null = null): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
+    if (!policy || !Number.isSafeInteger(policy.epoch) || policy.epoch < 0
+      || !Number.isSafeInteger(policy.collectionRevision) || policy.collectionRevision < 1) throw new Error('INVALID_COLLECTION_POLICY');
+    return this.#enqueue(source, content, scope, 'automatic', policy.epoch, policy.collectionRevision);
+  }
+
+  async #enqueue(source: Source, content: string, scope: string | null, kind: Operation['kind'], expectedEpoch?: number,
+    collectionRevision?: number): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
     if (typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > this.#maxPayloadBytes
         || !source || ![source.sessionId, source.entryId, source.branchId, source.contentVersion].every(x => typeof x === 'string' && x.length > 0)) {
       throw new Error('INVALID_MEMORY_SOURCE');
     }
     // Scope is supplied by the host, never copied from model input.
-    if (scope !== null && !/^[A-Za-z0-9_-]{1,128}$/.test(scope)) throw new Error('INVALID_MEMORY_SCOPE');
+    validateScope(scope);
     return this.#store.transact(state => {
       if (!state.authorization.enabled) return { phase: 'blocked', errorCode: 'MEMORY_DISABLED' };
-      const id = createHash('sha256').update(JSON.stringify([
-        state.owner, scope, source, state.authorization.epoch,
-      ])).digest('hex');
+      if (expectedEpoch !== undefined && expectedEpoch !== state.authorization.epoch) {
+        return { phase: 'blocked', errorCode: 'MEMORY_CONFIRM_AGAIN' };
+      }
+      if (kind === 'automatic' && (!state.authorization.automaticCollection
+        || collectionRevision !== state.authorization.collectionConsent?.revision
+        || scope !== state.authorization.collectionConsent?.scope)) {
+        return { phase: 'blocked', errorCode: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+      }
+      const identity: unknown[] = [state.owner, scope, source, state.authorization.epoch];
+      if (kind === 'automatic') identity.push(kind, collectionRevision);
+      const id = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
       const previous = state.operations[id];
       if (previous) {
         if (previous.payload !== undefined && previous.payload !== content) throw new Error('MEMORY_SOURCE_CONFLICT');
@@ -78,8 +159,8 @@ export class MemoryDelivery {
       }
       const now = new Date().toISOString();
       const operation: Operation = {
-        id, owner: state.owner, source: { ...source }, scope, kind: 'explicit',
-        authorizationEpoch: state.authorization.epoch, createdAt: now, updatedAt: now,
+        id, owner: state.owner, source: { ...source }, scope, kind,
+        authorizationEpoch: state.authorization.epoch, ...(collectionRevision === undefined ? {} : { collectionRevision }), createdAt: now, updatedAt: now,
         phase: 'queued', remoteSessionId: randomUUID(), payload: content,
       };
       state.operations[id] = operation;
@@ -93,8 +174,7 @@ export class MemoryDelivery {
     const operation = await this.#store.transact(state => {
       const current = state.operations[id];
       if (!current || terminal.has(current.phase)) return null;
-      if (unsent.has(current.phase) && (!state.authorization.enabled
-          || current.authorizationEpoch !== state.authorization.epoch)) {
+      if (unsent.has(current.phase) && !maySend(state, current)) {
         current.phase = 'blocked_by_pause';
         delete current.payload;
         return null;
@@ -167,6 +247,9 @@ export class MemoryDelivery {
       current.deliveryAttempts = 0;
       current.nextAttemptAt = 0;
       if (terminal.has(current.phase)) delete current.payload;
+      // A response may arrive after consent changed. Never leave a newly
+      // reconciled send phase eligible to carry its old payload forward.
+      blockUnsent(state);
     });
   }
 }

@@ -10,7 +10,7 @@ export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
 export { MemoryDelivery } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
-export type { Owner, Source, Operation, StateStore } from './types.js';
+export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent } from './types.js';
 
 export type MemoryModel = Pick<NonNullable<ExtensionContext['model']>, 'id' | 'provider' | 'api'>;
 
@@ -85,7 +85,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           }
           const result = await delivery.save({ sessionId: ctx.sessionManager.getSessionId(),
             entryId: `${entry.id}:${createHash('sha256').update(params.content).digest('hex')}`, branchId: entry.id,
-            contentVersion: createHash('sha256').update(JSON.stringify(entry)).digest('hex') }, params.content, options.scope ?? null);
+            contentVersion: createHash('sha256').update(JSON.stringify(entry)).digest('hex') }, params.content, options.scope ?? null, authorization.epoch);
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,
