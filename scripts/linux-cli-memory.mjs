@@ -4,6 +4,10 @@ import { mkdir, chown, chmod, writeFile, readFile, readdir } from 'node:fs/promi
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+const [modelsFile, connectionFile, provider, modelId, tokenizerRevision] = process.argv.slice(2);
+assert(modelsFile && connectionFile && provider && modelId && /^[a-f0-9]{40}$/.test(tokenizerRevision ?? ''),
+  'Usage: linux-cli-memory.mjs models.json connection.json provider model tokenizer-revision');
+const connection = JSON.parse(await readFile(connectionFile, 'utf8'));
 const root = '/tmp/pi-openviking-memory-acceptance';
 const hostUid = 1000, workerUid = 65534, groupId = 1000;
 await mkdir(root, { mode: 0o711 });
@@ -29,9 +33,9 @@ await writeFile(profileFile, JSON.stringify(profile), { mode: 0o600 });
 const env = { ...process.env };
 for (const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy']) delete env[key];
 const child = spawn(process.execPath, [fileURLToPath(new URL('../dist/cli.js', import.meta.url)), profileFile,
-  '--offline', '--mode', 'rpc', '--provider', 'cestc', '--model', 'qwen35', '--thinking', 'off'],
+  '--offline', '--mode', 'rpc', '--provider', provider, '--model', modelId, '--thinking', 'off'],
   { env, stdio: ['pipe', 'pipe', 'pipe'] });
-const events = []; let errors = '', exitCode, nextId = 0, confirmed = false;
+const events = []; let errors = '', exitCode, nextId = 0, confirmed = false, collectionConfirmed = false;
 child.on('exit', code => { exitCode = code; });
 child.stderr.on('data', data => { errors += data; });
 const lines = createInterface({ input: child.stdout });
@@ -39,8 +43,9 @@ lines.on('line', line => {
   let event; try { event = JSON.parse(line); } catch { return; }
   events.push(event);
   if (event.type === 'extension_ui_request' && event.method === 'confirm') {
-    assert.equal(event.title, '启用长期记忆');
-    confirmed = true;
+    assert(['启用长期记忆', '单独授权自动采集'].includes(event.title));
+    if (event.title === '启用长期记忆') confirmed = true;
+    else collectionConfirmed = true;
     child.stdin.write(JSON.stringify({ type: 'extension_ui_response', id: event.id, confirmed: true })+'\n');
   }
 });
@@ -94,13 +99,36 @@ try {
   const assistant = recalled.filter(e=>e.type==='message_end' && e.message?.role==='assistant')
     .flatMap(e=>e.message.content).filter(c=>c.type==='text').map(c=>c.text).join('\n');
   assert(assistant.includes('松风验收') && assistant.includes('简体中文'), 'New session did not recall saved preference');
+  let automaticCollection;
+  if (connection.collection) {
+    assert.equal((await state()).authorization.automaticCollection, false);
+    await command('prompt', { message: '/memory auto-enable' });
+    await wait(async () => (await state()).authorization.automaticCollection);
+    assert(collectionConfirmed);
+    const grant = (await state()).authorization.collectionConsent;
+    assert(grant.revision > 0 && grant.effectiveAt && grant.boundaries.length > 0);
+    const automatic = await model('我的稳定排版偏好是：每份周报最后使用“竹影小结”作为总结章节标题。这里只需确认收到，不要调用 memory_save。');
+    assert(!automatic.some(e => e.type === 'tool_execution_start' && e.toolName === 'memory_save'));
+    const collected = await wait(async () => Object.values((await state())?.operations ?? {})
+      .find(o => o.kind === 'automatic' && o.phase === 'ready'), 180000);
+    assert(collected.collectionSources.length > 0 && collected.memoryUris.length > 0);
+    await command('new_session');
+    const recalledAutomatic = await model('我偏好的周报总结章节标题是什么？');
+    assert(recalledAutomatic.filter(e => e.type === 'message_end' && e.message?.role === 'assistant')
+      .flatMap(e => e.message.content).some(c => c.type === 'text' && c.text.includes('竹影小结')));
+    await command('prompt', { message: '/memory auto-disable' });
+    await wait(async () => !(await state()).authorization.automaticCollection);
+    assert((await state()).authorization.enabled);
+    automaticCollection = { separateConsent: true, completedRequest: true, ready: true,
+      newSessionRecall: true, revokePreservesMainSwitch: true, operationId: collected.id };
+  }
   await command('prompt', { message: '/memory pause' });
   await wait(async()=>!(await state()).authorization.enabled);
-  const connection = JSON.parse(await readFile(process.argv[3],'utf8'));
   assert(!JSON.stringify(events).includes(connection.apiKey) && !errors.includes(connection.apiKey));
   const evidence = { standardCliRpc: true, realService: true, explicitConsent: true, ready: true,
-    viewContentAndSource: true, newSessionRecall: true, pause: true, automaticCollectionUnapproved: true,
-    credentialAbsentFromEvents: true, operationId: operation.id, tokenizerRevision: '60d8d70770c6776ff598c94bb586a859a38244f1' };
+    viewContentAndSource: true, newSessionRecall: true, pause: true, automaticCollectionUnapproved: !connection.collection,
+    ...(automaticCollection ? { automaticCollection } : {}),
+    credentialAbsentFromEvents: true, operationId: operation.id, provider, modelId, tokenizerRevision };
   await writeFile('/evidence/result.json',JSON.stringify(evidence,null,2),{mode:0o600});
   console.log(JSON.stringify(evidence));
 } finally {

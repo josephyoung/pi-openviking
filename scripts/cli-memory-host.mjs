@@ -40,7 +40,8 @@ export async function createHost({ paths, assertToolIsolation }) {
       } });
     collectionScheduler = new CollectionScheduler({ ...configured.scheduler, store: stateStore, delivery, selector,
       resolveSession: (id, signal) => sessions.resolveSession(id, signal), wakeDelivery: () => scheduler.wake() });
-    collection = { sessions, lifecycleTimeoutMs: configured.lifecycleTimeoutMs, wake: () => collectionScheduler.wake(), onError: code => console.error(code) };
+    collection = { sessions, policyVersion: configured.policyVersion, lifecycleTimeoutMs: configured.lifecycleTimeoutMs,
+      wake: () => collectionScheduler.wake(), onError: code => console.error(code) };
   }
   return { memory: { owner: config.owner, stateStore, client, policy, collection, assertToolIsolation,
     wakeDelivery: () => scheduler.wake() }, scheduler, collectionScheduler };
