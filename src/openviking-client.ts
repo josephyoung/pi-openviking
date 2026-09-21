@@ -177,6 +177,55 @@ export class OwnerMemoryClient implements DeliveryTransport {
     return memoryUris.length ? { status: 'ready', archiveId, memoryUris } : { status: 'processing' };
   }
 
+  /** Transport only: the host must persist its governance barrier and drain writers first. */
+  async replaceMemory(uri: string, content: string): Promise<void> {
+    const target = this.#documentUri(uri);
+    if (typeof content !== 'string' || !content.trim()) throw new Error('INVALID_MEMORY_REPLACEMENT');
+    await this.verifyIdentity();
+    await this.#sdk.write(target, content, { mode: 'replace', wait: true,
+      timeout: Math.ceil(this.#timeoutMs / 1000) });
+    // A successful HTTP reply alone is not proof that the replacement is visible.
+    if (await this.#sdk.read(target) !== content) throw new Error('MEMORY_REPLACEMENT_UNCONFIRMED');
+  }
+
+  /** Remove one document, never a caller-selected directory or derived metadata file. */
+  async removeMemory(uri: string): Promise<void> {
+    const target = this.#documentUri(uri);
+    await this.verifyIdentity();
+    try {
+      await this.#sdk.remove(target, { recursive: false, wait: true,
+        timeout: Math.ceil(this.#timeoutMs / 1000) });
+    } catch (error) {
+      if (!isOpenVikingError(error) || error.statusCode !== 404) throw error;
+    }
+    try { await this.#sdk.read(target); }
+    catch (error) {
+      if (isOpenVikingError(error) && error.statusCode === 404) return;
+      throw error;
+    }
+    throw new Error('MEMORY_DELETION_UNCONFIRMED');
+  }
+
+  /** A source can be removed only through an owner/scope-bound durable operation. */
+  async removeSource(operation: Readonly<Operation>): Promise<void> {
+    this.#check(operation);
+    await this.verifyIdentity();
+    try { await this.#sdk.deleteSession(operation.remoteSessionId); }
+    catch (error) {
+      if (!isOpenVikingError(error) || error.statusCode !== 404) throw error;
+    }
+    if (await this.sessionExists(operation.remoteSessionId)) throw new Error('MEMORY_SOURCE_DELETION_UNCONFIRMED');
+  }
+
+  #documentUri(uri: unknown): string {
+    const target = this.#memoryUri(uri);
+    const relative = target.slice(this.#root.length + 1);
+    if (!relative.endsWith('.md') || relative.split('/').some(segment => segment.startsWith('.'))) {
+      throw new Error('INVALID_MEMORY_DOCUMENT');
+    }
+    return target;
+  }
+
   async readMemory(uri: string): Promise<string> {
     const target = this.#memoryUri(uri);
     await this.verifyIdentity();
