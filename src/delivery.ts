@@ -37,6 +37,7 @@ function blockUnsent(state: OwnerState): void {
       || request.collectionRevision !== authorization.collectionConsent?.revision
       || request.scope !== authorization.collectionConsent?.scope)) {
       request.phase = 'blocked_by_pause';
+      delete request.selectionLease;
       request.updatedAt = new Date().toISOString();
     }
   }
@@ -162,7 +163,7 @@ export class MemoryDelivery {
   }
 
   /** Trusted selector output only. One durable commit covers results, sources and outbox. */
-  async collectSelection(selection: Extract<CollectionSelectionResult, { status: 'ready' }>): Promise<CollectionHandoffResult> {
+  async collectSelection(selection: Extract<CollectionSelectionResult, { status: 'ready' }>, leaseId?: string, signal?: AbortSignal): Promise<CollectionHandoffResult> {
     const selected = structuredClone(selection);
     if (!selected || selected.status !== 'ready' || !Array.isArray(selected.requestIds) || !selected.requestIds.length
       || selected.requestIds.some(id => typeof id !== 'string' || !id)
@@ -170,6 +171,7 @@ export class MemoryDelivery {
       throw new Error('INVALID_COLLECTION_SELECTION');
     }
     return this.#store.transact(state => {
+      if (signal?.aborted) return { status: 'blocked', errorCode: 'MEMORY_SELECTION_ABORTED' };
       const requests = selected.requestIds.map(id => state.collectionRequests?.[id]);
       const first = requests[0];
       if (!first || requests.some(request => !request || request.scope !== first.scope
@@ -209,6 +211,10 @@ export class MemoryDelivery {
       }
       if (requests.some(request => request!.phase !== 'settled')) {
         return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
+      }
+      if (requests.some(request => leaseId === undefined ? request!.selectionLease !== undefined
+        : request!.selectionLease?.id !== leaseId || request!.selectionLease.expiresAt <= Date.now())) {
+        return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_CLAIM_EXPIRED' };
       }
       const authorization = state.authorization;
       if (!authorization.enabled || !authorization.automaticCollection
@@ -251,12 +257,15 @@ export class MemoryDelivery {
       }
       for (const request of requests) {
         request!.phase = 'processed';
+        delete request!.selectionLease;
+        delete request!.selectionErrorCode;
+        delete request!.selectionNextAttemptAt;
         request!.selectionDigest = selectionDigest;
         request!.operationIds = [...operationIds];
         request!.updatedAt = now;
       }
       return { status: 'recorded', operationIds: [...operationIds] };
-    });
+    }, signal);
   }
 
   async #enqueue(source: Source, content: string, scope: string | null, kind: Operation['kind'], expectedEpoch?: number,

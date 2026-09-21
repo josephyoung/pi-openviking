@@ -52,7 +52,7 @@ export class CollectionFactSelector {
     try {
       const work = async (): Promise<CollectionSelectionResult> => {
         signal.throwIfAborted();
-        const state = await this.options.store.read();
+        const state = await this.options.store.read(signal);
         const ids = [...new Set(requestIds)];
         if (!ids.length) return { status: 'ready', requestIds: [], facts: [] };
         const requests: CollectionRequest[] = [];
@@ -83,7 +83,7 @@ export class CollectionFactSelector {
         const messages: CollectionInputMessage[] = [];
         for (const request of requests) {
           signal.throwIfAborted();
-          const input = await this.#builder.build(request.id, session);
+          const input = await this.#builder.build(request.id, session, signal);
           if (input.status !== 'ready') return input;
           messages.push(...input.messages);
 
@@ -94,10 +94,10 @@ export class CollectionFactSelector {
         })) });
         if (Buffer.byteLength(data) > this.options.maxInputBytes) return { status: 'blocked', code: 'MEMORY_COLLECTION_INPUT_LIMIT' };
         signal.throwIfAborted();
-        if (!permitted(await this.options.store.read())) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+        if (!permitted(await this.options.store.read(signal))) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
         const response = await this.options.complete({ systemPrompt: collectionSelectionPrompt, data, signal });
         signal.throwIfAborted();
-        if (!permitted(await this.options.store.read())) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+        if (!permitted(await this.options.store.read(signal))) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
         if (typeof response !== 'string' || Buffer.byteLength(response) > this.options.maxInputBytes) {
           return { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' };
         }

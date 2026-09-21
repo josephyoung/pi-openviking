@@ -38,14 +38,14 @@ export class CollectionInputBuilder {
     scope?: string | null;
     maxInputBytes: number;
     /** Trusted host snapshot. Never persisted, returned, or supplied by model input. */
-    sensitiveValues?: () => readonly string[] | Promise<readonly string[]>;
+    sensitiveValues?: (signal?: AbortSignal) => readonly string[] | Promise<readonly string[]>;
   }) {
     if (!Number.isSafeInteger(options.maxInputBytes) || options.maxInputBytes < 1) throw new Error('INVALID_COLLECTION_LIMIT');
   }
 
-  async build(requestId: string, session: Session): Promise<CollectionInputResult> {
+  async build(requestId: string, session: Session, signal?: AbortSignal): Promise<CollectionInputResult> {
     try {
-      const state = await this.options.store.read();
+      const state = await this.options.store.read(signal);
       const request = state.collectionRequests?.[requestId];
       const scope = this.options.scope ?? null;
       const permitted = (current: typeof state) => request && current.collectionRequests?.[requestId]?.phase === 'settled'
@@ -55,11 +55,12 @@ export class CollectionInputBuilder {
         && current.authorization.collectionConsent?.revision === request.collectionRevision
         && current.authorization.collectionConsent.scope === scope;
       if (!request || !permitted(state)) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
-      const secrets = [...(await this.options.sensitiveValues?.() ?? [])];
+      const secrets = [...(await this.options.sensitiveValues?.(signal) ?? [])];
       const messages: CollectionInputMessage[] = [];
       const excludedEntries: string[] = [];
       let bytes = 0;
       for (const id of request.sourceEntries) {
+        signal?.throwIfAborted();
         const entry = session.getEntry(id);
         if (!entry || entry.type !== 'message') return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
         const message = entry.message;
@@ -85,7 +86,7 @@ export class CollectionInputBuilder {
           role: message.role === 'user' ? 'user' : 'assistant_reference', text });
       }
       // Scanning/host secret discovery must not bypass a concurrent pause/revoke.
-      if (!permitted(await this.options.store.read())) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+      if (!permitted(await this.options.store.read(signal))) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
       return { status: 'ready', request: structuredClone(request), messages, excludedEntries };
     } catch {
       // Scanner diagnostics may contain source text. Do not propagate their cause.

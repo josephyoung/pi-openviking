@@ -2,20 +2,22 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { flock } from 'fs-ext';
 import { checkedOwner, sameOwner, isCollectionSource, type Owner, type OwnerState, type StateStore } from './types.js';
 
-async function lock(fd: number, operation: 'ex' | 'un'): Promise<void> {
+async function lock(fd: number, operation: 'ex' | 'un', signal?: AbortSignal): Promise<void> {
   // Blocking flock consumes a libuv worker: enough waiting writers can starve
   // the current holder's fsync. Nonblocking acquisition keeps that pool free.
   for (;;) {
+    signal?.throwIfAborted();
     try {
       await new Promise<void>((accept, reject) => flock(fd, operation === 'ex' ? 'exnb' : 'un',
         error => error ? reject(error) : accept()));
       return;
     } catch (error) {
       if (operation !== 'ex' || !['EAGAIN', 'EWOULDBLOCK'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await delay(10, undefined, { signal });
     }
   }
 }
@@ -51,14 +53,22 @@ function verify(state: OwnerState, owner: Owner): void {
         || (request.scope !== null && (typeof request.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.scope)))
         || !Number.isSafeInteger(request.authorizationEpoch) || request.authorizationEpoch < 0
         || !Number.isSafeInteger(request.collectionRevision) || request.collectionRevision < 1
-        || !['running', 'settled', 'processed', 'discarded', 'blocked_by_pause'].includes(request.phase)
+        || !['running', 'settled', 'processed', 'discarded', 'blocked_by_pause', 'selection_failed'].includes(request.phase)
         || !Array.isArray(request.sourceEntries) || request.sourceEntries.some(entry => typeof entry !== 'string' || !entry)
         || new Set(request.sourceEntries).size !== request.sourceEntries.length
         || ![request.createdAt, request.updatedAt].every(time => typeof time === 'string' && Number.isFinite(Date.parse(time)))
-        || (['settled', 'processed'].includes(request.phase) && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
+        || (['settled', 'processed', 'selection_failed'].includes(request.phase) && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
         throw new Error('INVALID_COLLECTION_REQUEST');
       }
-      if (request.phase === 'processed' && (typeof request.selectionDigest !== 'string'
+      if ((request.selectionAttempts !== undefined && (!Number.isSafeInteger(request.selectionAttempts) || request.selectionAttempts < 0))
+        || (request.selectionNextAttemptAt !== undefined && (!Number.isSafeInteger(request.selectionNextAttemptAt) || request.selectionNextAttemptAt < 0))
+        || (request.selectionErrorCode !== undefined && (typeof request.selectionErrorCode !== 'string' || !/^MEMORY_[A-Z_]+$/.test(request.selectionErrorCode)))
+        || (request.selectionLease !== undefined && (!request.selectionLease || request.phase !== 'settled'
+          || typeof request.selectionLease.id !== 'string' || !request.selectionLease.id
+          || !Number.isSafeInteger(request.selectionLease.expiresAt) || request.selectionLease.expiresAt < 0))) {
+        throw new Error('INVALID_COLLECTION_CLAIM');
+      }
+      if (request.phase === 'processed'  && (typeof request.selectionDigest !== 'string'
         || !/^[a-f0-9]{64}$/.test(request.selectionDigest) || !Array.isArray(request.operationIds)
         || new Set(request.operationIds).size !== request.operationIds.length
         || request.operationIds.some(operationId => typeof operationId !== 'string'
@@ -164,8 +174,10 @@ export class FileStateStore implements StateStore {
     } finally { await rm(temporary, { force: true }); }
   }
 
-  async #locked<T>(action: () => Promise<T>): Promise<T> {
+  async #locked<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
     await this.#prepare();
+    signal?.throwIfAborted();
     const file = await open(join(this.#directory, 'state.lock'),
       constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try {
@@ -173,18 +185,19 @@ export class FileStateStore implements StateStore {
       if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.uid !== process.getuid?.()) {
         throw new Error('UNPROTECTED_MEMORY_LOCK');
       }
-      await lock(file.fd, 'ex');
-      try { return await action(); } finally { await lock(file.fd, 'un'); }
+      await lock(file.fd, 'ex', signal);
+      try { signal?.throwIfAborted(); return await action(); } finally { await lock(file.fd, 'un'); }
     } finally { await file.close(); }
   }
 
-  read(): Promise<OwnerState> {
-    return this.#locked(() => this.#load());
+  read(signal?: AbortSignal): Promise<OwnerState> {
+    return this.#locked(() => this.#load(), signal);
   }
 
-  transact<T>(mutation: (state: OwnerState) => T): Promise<T> {
+  transact<T>(mutation: (state: OwnerState) => T, signal?: AbortSignal): Promise<T> {
     return this.#locked(async () => {
       const state = await this.#load();
+      signal?.throwIfAborted();
       const result = mutation(state);
       if (result && typeof (result as { then?: unknown }).then === 'function') {
         throw new Error('ASYNC_MEMORY_TRANSACTION');
@@ -192,6 +205,6 @@ export class FileStateStore implements StateStore {
       state.revision++;
       await this.#write(state);
       return result;
-    });
+    }, signal);
   }
 }

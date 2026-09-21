@@ -9,6 +9,8 @@ import { sameOwner, type Owner, type StateStore } from './types.js';
 export { protectedMemoryResources } from './resource-profile.js';
 export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
+export { CollectionScheduler } from './collection-scheduler.js';
+export type { CollectionSchedulerOptions } from './collection-scheduler.js';
 export { CollectionFactSelector, collectionSelectionPrompt } from './collection-selection.js';
 export type { SelectedCollectionFact, CollectionSelectionResult } from './collection-selection.js';
 export { CollectionInputBuilder } from './collection-input.js';

@@ -81,7 +81,11 @@ export interface CollectionRequest {
   scope: string | null;
   authorizationEpoch: number;
   collectionRevision: number;
-  phase: 'running' | 'settled' | 'processed' | 'discarded' | 'blocked_by_pause';
+  phase: 'running' | 'settled' | 'processed' | 'discarded' | 'blocked_by_pause' | 'selection_failed';
+  selectionAttempts?: number;
+  selectionNextAttemptAt?: number;
+  selectionLease?: { id: string; expiresAt: number };
+  selectionErrorCode?: string;
   selectionDigest?: string;
   operationIds?: string[];
   createdAt: string;
@@ -102,9 +106,9 @@ export interface OwnerState {
 
 export interface StateStore {
   readonly owner: Owner;
-  read(): Promise<OwnerState>;
+  read(signal?: AbortSignal): Promise<OwnerState>;
   /** Synchronous mutation, serialized across processes and committed before return. */
-  transact<T>(mutation: (state: OwnerState) => T): Promise<T>;
+  transact<T>(mutation: (state: OwnerState) => T, signal?: AbortSignal): Promise<T>;
 }
 
 export function checkedOwner(owner: Owner): Owner {

@@ -241,3 +241,36 @@ Publishing uses npm Trusted Publishing bound to `josephyoung/pi-openviking`
 and workflow filename `publish.yml`, with permission to publish. No npm token
 is stored in GitHub secrets. The trust relationship must be configured on npm
 before the first automated release.
+
+## Automatic collection host API (unreleased)
+
+`CollectionLifecycle` journals completed pi requests without copying conversation
+bodies. `CollectionFactSelector` screens original entries and selects source-backed
+facts using the trusted host's model callback. `CollectionScheduler` runs once per
+owner, independent of viewers: it merges settled requests within `mergeWindowMs`,
+forces a due batch at `maxWaitMs`, limits `maxRequestsPerBatch`, and atomically
+claims the batch before inference. `resolveSession(sessionId, signal)` must resolve
+only this owner's protected original session, including after process restart.
+It must never resolve a model-provided path or another owner's session.
+
+The scheduler persists attempts, next retry time and expiring claim tokens.
+A second process cannot start selection while an owner claim is live. Expired
+claims may be recovered, but only the current token can commit selection and
+outbox receipts. A pause/revocation invalidates the claim. `maxAttempts` bounds
+failures; exhausted requests become `selection_failed` with a fixed error code.
+These request failures need a host status projection; they are not saved memories.
+Network outcomes from actual OpenViking writes remain the delivery scheduler's
+responsibility and must be reconciled rather than resent.
+
+`workTimeoutMs` bounds source lookup and selection; configure `leaseMs` longer
+than that deadline with room for durable handoff. Call `wake()` after settlement
+and `start()` on owner startup to recover pending work. `stop()` aborts local
+selection and waits for bounded claim cleanup. It does not flush raw conversations
+or cancel a remote write. The supplied store supports `read(signal)` and
+`transact(mutation, signal)` to cancel lock waits; once an atomic write starts it
+finishes its durable commit. Custom stores and host callbacks should honor abort
+signals too. The scheduler also fences late callbacks at the handoff boundary.
+
+The host must still wire protected session recovery, the configured model and
+credential snapshot, separate consent controls, status and lifecycle ownership.
+This branch does not enable collection in the published package by itself.
