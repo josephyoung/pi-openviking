@@ -1,3 +1,4 @@
+import { governanceHoldsDelivery } from './governance.js';
 import type { MemoryDelivery } from './delivery.js';
 import { sameOwner, type DeliveryPhase, type StateStore } from './types.js';
 
@@ -63,7 +64,7 @@ export class DeliveryScheduler {
   async #tick(): Promise<void> {
     const { store, delivery, maxOperationsPerTick, maxAttemptsPerPhase, initialBackoffMs, maxBackoffMs } = this.#options;
     const snapshot = await store.read();
-    const candidates = Object.values(snapshot.operations).filter(operation => !terminal.has(operation.phase) && (operation.nextAttemptAt ?? 0) <= Date.now())
+    const candidates = Object.values(snapshot.operations).filter(operation => !terminal.has(operation.phase) && !governanceHoldsDelivery(snapshot, operation) && (operation.nextAttemptAt ?? 0) <= Date.now())
       .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0) || a.createdAt.localeCompare(b.createdAt));
     let processed = 0;
     for (const candidate of candidates) {
@@ -72,7 +73,7 @@ export class DeliveryScheduler {
       const claimed = await store.transact(state => {
         const operation = state.operations[candidate.id];
         const now = Date.now();
-        if (!operation || terminal.has(operation.phase) || (operation.nextAttemptAt ?? 0) > now) return false;
+        if (!operation || terminal.has(operation.phase) || governanceHoldsDelivery(state, operation) || (operation.nextAttemptAt ?? 0) > now) return false;
         const attempts = operation.deliveryAttempts ?? 0;
         if (attempts >= maxAttemptsPerPhase) {
           // This is an unresolved outcome, never a claim that the server failed

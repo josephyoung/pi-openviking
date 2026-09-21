@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { CollectionScheduler, CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery } from '../dist/host.js';
+import { CollectionScheduler, CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
@@ -212,4 +212,22 @@ test('real filesystem lock contention is abortable and a cancelled transaction n
     assert.equal(mutated, false);
   } finally { await lock('un'); await descriptor.close(); }
   assert.deepEqual(await f.store.read(), before);
+});
+
+
+test('pending governance holds model claims without spending retries, then new work can resume', async t => {
+  const f = await fixture(t);
+  const old = await f.add();
+  const job = await new MemoryGovernanceBarrier(f.store).begin({ kind: 'clear', scope: null });
+  const fresh = await f.add('A new preference after the clearing boundary.');
+  const scheduler = f.start();
+  await delay(150);
+  assert.equal(f.calls.length, 0);
+  const held = await f.store.read();
+  assert.equal(held.collectionRequests[old].phase, 'discarded');
+  assert.equal(held.collectionRequests[fresh].selectionAttempts, undefined);
+  // Test-only coordinator completion; remote clearing is outside this test.
+  await f.store.transact(state => { state.governance.jobs[job.id].phase = 'complete'; });
+  scheduler.wake(); await until(() => processed(f, [fresh])); await scheduler.stop();
+  assert.deepEqual(f.calls, [[fresh]]);
 });

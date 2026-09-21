@@ -1,3 +1,4 @@
+import { governancePending, governanceHoldsDelivery, sourceRevoked, blockRevokedOperations } from './governance.js';
 import { isTaskFactProjection } from './task-facts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
@@ -31,6 +32,7 @@ function maySend(state: OwnerState, operation: Operation): boolean {
       && authorization.collectionConsent.scope === operation.scope));
 }
 function blockUnsent(state: OwnerState): void {
+  blockRevokedOperations(state);
   for (const request of Object.values(state.collectionRequests ?? {})) {
     const authorization = state.authorization;
     if (['running', 'settled'].includes(request.phase) && (!authorization.enabled
@@ -184,6 +186,11 @@ export class MemoryDelivery {
         || selected.explicitOperationIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) {
         throw new Error('INVALID_COLLECTION_SELECTION');
       }
+      if (governancePending(state, first.scope)
+        || selected.facts.some(fact => fact?.source && sourceRevoked(state, first.scope, fact.source.entryId)
+          || fact?.evidence?.some(item => item?.source && sourceRevoked(state, first.scope, item.source.entryId)))) {
+        return { status: 'blocked', errorCode: 'MEMORY_GOVERNANCE_PENDING' };
+      }
       const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
       const validSource = (source: CollectionSource) => isCollectionSource(source)
         && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
@@ -298,6 +305,8 @@ export class MemoryDelivery {
     // Scope is supplied by the host, never copied from model input.
     validateScope(scope);
     return this.#store.transact(state => {
+      if (governancePending(state, scope)) return { phase: 'blocked', errorCode: 'MEMORY_GOVERNANCE_PENDING' };
+      if (sourceRevoked(state, scope, source.entryId)) return { phase: 'blocked', errorCode: 'MEMORY_SOURCE_REVOKED' };
       if (!state.authorization.enabled) return { phase: 'blocked', errorCode: 'MEMORY_DISABLED' };
       if (expectedEpoch !== undefined && expectedEpoch !== state.authorization.epoch) {
         return { phase: 'blocked', errorCode: 'MEMORY_CONFIRM_AGAIN' };
@@ -342,8 +351,12 @@ export class MemoryDelivery {
   async advance(id: string): Promise<void> {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('INVALID_MEMORY_OPERATION');
     const operation = await this.#store.transact(state => {
+      blockRevokedOperations(state);
       const current = state.operations[id];
       if (!current || terminal.has(current.phase)) return null;
+      // Hold unrelated writes while old accepted mutations drain. Their body
+      // and queue record survive; read-only reconciliation remains available.
+      if (governanceHoldsDelivery(state, current)) return null;
       if (unsent.has(current.phase) && !maySend(state, current)) {
         current.phase = 'blocked_by_pause';
         delete current.payload;

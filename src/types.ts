@@ -97,12 +97,28 @@ export interface CollectionRequest {
   sourceEntries: string[];
 }
 
+export interface GovernanceJob {
+  id: string;
+  revision: number;
+  kind: 'forget' | 'correct' | 'clear';
+  scope: string | null;
+  phase: 'draining' | 'applying' | 'complete';
+  memoryUris: string[];
+  operationIds: string[];
+  /** All pre-barrier scope writers must be reconciled or edited before release. */
+  writerOperationIds: string[];
+  /** Hashes of stable entry identity, never deleted plaintext. */
+  sourceKeys: string[];
+  createdAt: string;
+}
+
 export interface OwnerState {
   version: 1;
   owner: Owner;
   revision: number;
   authorization: Authorization;
   operations: Record<string, Operation>;
+  governance?: { revision: number; jobs: Record<string, GovernanceJob> };
   /** Source receipts contain no conversation text and survive consent changes. */
   collectedSources?: Record<string, CollectedSource>;
   collectionRequests?: Record<string, CollectionRequest>;

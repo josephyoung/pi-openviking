@@ -1,3 +1,4 @@
+import { governancePending } from './governance.js';
 import { explicitSaveSource } from './explicit-save-source.js';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -20,6 +21,7 @@ export type { CollectionInputMessage, CollectionInputResult, CollectionUserTextP
 export { CollectionLifecycle } from './collection-lifecycle.js';
 export { CollectionSessionRegistry } from './collection-sessions.js';
 export { MemoryDelivery } from './delivery.js';
+export { MemoryGovernanceBarrier } from './governance.js';
 export type { CollectionHandoffResult } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
 export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';
@@ -168,7 +170,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
         const work = async () => {
           await options.assertToolIsolation();
           const state = await options.stateStore.read();
-          if (!state.authorization.enabled) { cached = undefined; return ''; }
+          if (!state.authorization.enabled || governancePending(state, options.scope ?? null)) { cached = undefined; return ''; }
           if (cached?.revision === state.revision && cached.modelKey === modelKey) {
             return keyFor(ctx.model) === modelKey ? cached.text : '';
           }

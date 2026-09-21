@@ -32,6 +32,45 @@ function verify(state: OwnerState, owner: Owner): void {
       || !state.operations || Array.isArray(state.operations)) {
     throw new Error('INVALID_MEMORY_STATE');
   }
+  if (state.governance !== undefined) {
+    const governance = state.governance;
+    if (!governance || !Number.isSafeInteger(governance.revision) || governance.revision < 1
+      || !governance.jobs || typeof governance.jobs !== 'object' || Array.isArray(governance.jobs)) {
+      throw new Error('INVALID_MEMORY_GOVERNANCE');
+    }
+    const revisions = new Set<number>();
+    const pendingScopes = new Set<string | null>();
+    for (const [id, job] of Object.entries(governance.jobs)) {
+      if (!job || job.id !== id || !/^[a-f0-9-]{36}$/.test(id)
+        || !Number.isSafeInteger(job.revision) || job.revision < 1 || job.revision > governance.revision
+        || revisions.has(job.revision) || !['forget', 'correct', 'clear'].includes(job.kind)
+        || !['draining', 'applying', 'complete'].includes(job.phase)
+        || (job.scope !== null && (typeof job.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(job.scope)))
+        || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))
+        || !Array.isArray(job.sourceKeys) || new Set(job.sourceKeys).size !== job.sourceKeys.length
+        || job.sourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
+        || !Array.isArray(job.operationIds) || new Set(job.operationIds).size !== job.operationIds.length
+        || job.operationIds.some(operationId => typeof operationId !== 'string'
+          || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
+        || !Array.isArray(job.writerOperationIds) || new Set(job.writerOperationIds).size !== job.writerOperationIds.length
+        || job.writerOperationIds.some(operationId => typeof operationId !== 'string'
+          || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
+        || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
+        || !Array.isArray(job.memoryUris) || new Set(job.memoryUris).size !== job.memoryUris.length
+        || (job.kind !== 'clear' && job.memoryUris.length !== 1)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+      const root = `viking://user/${owner.userId}/${job.scope === null ? '' : `peers/${job.scope}/`}memories/`;
+      if (job.memoryUris.some(uri => typeof uri !== 'string' || !uri.startsWith(root)
+        || /[%?#\\\x00-\x1f]/.test(uri) || !uri.endsWith('.md')
+        || uri.slice(root.length).split('/').some(segment => !segment || segment.startsWith('.')))) {
+        throw new Error('INVALID_MEMORY_GOVERNANCE');
+      }
+      revisions.add(job.revision);
+      if (job.phase !== 'complete') {
+        if (pendingScopes.has(job.scope)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+        pendingScopes.add(job.scope);
+      }
+    }
+  }
   const consent = state.authorization.collectionConsent;
   if ((state.authorization.automaticCollection && !consent) || (consent !== undefined && (!consent
       || !Number.isSafeInteger(consent.revision) || consent.revision < 1
