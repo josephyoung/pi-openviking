@@ -352,6 +352,27 @@ candidates. The model receives only `task_fact` text with opaque source IDs, nev
 the raw arguments/results. Selected task facts retain the original result source
 plus tool/policy provenance; only selected necessary fact text enters the outbox.
 
+Verified provenance does not imply lasting value. The selector separately checks
+whether a candidate establishes a reusable business outcome or enduring fact.
+Successful connectivity/authentication/health checks, numeric status codes and
+acceptance markers are transient execution evidence, including when completing
+such a check was exactly what the user requested. These should produce no fact.
+Host contracts should project necessary durable business fields in the first
+place; a model's semantic filter is not a substitute for a narrow allowlist.
+
+The opt-in real-model regression probe covers eligible business outcomes,
+foreign owners, failed/unlisted tools, sensitive/instruction text, and repeated
+transient-status requests. After building, run:
+
+```sh
+node scripts/check-collection-semantics.mjs "$PWD" /secure/models.json /secure/model-credentials.json
+```
+
+It uses the configured `xiaomi-token-plan-cn` / `mimo-v2.5` model and synthetic
+business responses. The private credential JSON supplies the corresponding model
+key; it is never printed. This makes real model calls and fails on a semantic
+mismatch. It does not claim real OA, OpenViking delivery or browser coverage.
+
 Restoring the main switch preserves the existing collection grant's rule version.
 It does not authorize a new task-fact policy. Hosts can pass their current
 `collection.policyVersion` to the extension: standard pi reports changed rules
