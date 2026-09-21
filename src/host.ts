@@ -14,6 +14,7 @@ export { CollectionScheduler } from './collection-scheduler.js';
 export type { CollectionSchedulerOptions } from './collection-scheduler.js';
 export { CollectionFactSelector, collectionSelectionPrompt } from './collection-selection.js';
 export type { SelectedCollectionFact, CollectionSelectionResult } from './collection-selection.js';
+export type { TaskFactPolicy, TaskFactProjection, TaskFactProjector } from './task-facts.js';
 export { CollectionInputBuilder } from './collection-input.js';
 export type { CollectionInputMessage, CollectionInputResult } from './collection-input.js';
 export { CollectionLifecycle } from './collection-lifecycle.js';
@@ -46,6 +47,8 @@ export interface MemoryExtensionOptions {
   collection?: {
     sessions: Pick<CollectionSessionRegistry, 'register' | 'boundaries'>;
     lifecycleTimeoutMs: number;
+    /** Current configured rules; a changed version needs a separate collection grant. */
+    policyVersion?: string;
     wake(): void;
     onError?(code: 'MEMORY_COLLECTION_LIFECYCLE_UNAVAILABLE'): void;
   };
@@ -63,6 +66,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
     .every(value => Number.isSafeInteger(value) && value > 0) || !Number.isFinite(policy.minimumScore)) {
     throw new Error('INVALID_MEMORY_POLICY');
   }
+  if (options.collection?.policyVersion !== undefined && (typeof options.collection.policyVersion !== 'string' || !options.collection.policyVersion.trim())) throw new Error('INVALID_COLLECTION_POLICY');
   if (options.collection && (!Number.isSafeInteger(options.collection.lifecycleTimeoutMs) || options.collection.lifecycleTimeoutMs <= 0)) throw new Error('INVALID_COLLECTION_LIFECYCLE_TIMEOUT');
   const delivery = new MemoryDelivery({ store: options.stateStore, transport: options.client, maxPayloadBytes: policy.maxPayloadBytes });
   return pi => {

@@ -317,3 +317,30 @@ can retain its original provenance while a reused short ID or changed content
 cannot borrow it. This reference must remain in the same owner, scope, authorization
 epoch and collection revision. Pause/resume or renewed consent does not import the
 older proposition. No historical user messages are pulled into the new batch.
+
+### Allowlisted task facts
+
+Raw tool arguments/results remain excluded by default. A host may configure
+`CollectionFactSelector` (or `CollectionInputBuilder`) with `taskFacts: {
+policyVersion, tools: new Map([[toolName, projector]]) }`. Projectors are trusted,
+installed host functions, not model parameters or browser configuration. They run
+locally and must verify their business result/actor contract and return only the
+necessary fact text, or `undefined`. Do not stringify raw content/details or use a
+model/network service inside the projector. The context supplies the bound owner,
+scope and cancellation signal; the result is a copy of the original tool result.
+
+Projection requires one matching earlier tool call, one successful result and the
+same separately authorized policy version. Failed, duplicate, unlisted or
+unmatched results never invoke the projector. Projected text passes the same
+credential scanner, private-key snapshot matching and byte budget as conversation
+candidates. The model receives only `task_fact` text with opaque source IDs, never
+the raw arguments/results. Selected task facts retain the original result source
+plus tool/policy provenance; only selected necessary fact text enters the outbox.
+
+Restoring the main switch preserves the existing collection grant's rule version.
+It does not authorize a new task-fact policy. Hosts can pass their current
+`collection.policyVersion` to the extension: standard pi reports changed rules
+and `/memory auto-enable` confirms the new version separately. Each grant/resume
+still establishes a new source boundary, with no backfill. Configure no projector
+for tools without a trusted business-result contract, including general-purpose
+shell output; the default empty allowlist remains intentional.

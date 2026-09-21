@@ -1,3 +1,4 @@
+import type { TaskFactProjection } from './task-facts.js';
 export interface Owner {
   readonly accountId: string;
   readonly userId: string;
@@ -58,7 +59,7 @@ export interface Operation {
   authorizationEpoch: number;
   collectionRevision?: number;
   collectionSources?: CollectionSource[];
-  collectionEvidence?: Array<{ source: CollectionSource; quoteDigest: string }>;
+  collectionEvidence?: Array<{ source: CollectionSource; quoteDigest: string; projection?: TaskFactProjection }>;
   createdAt: string;
   updatedAt: string;
   phase: DeliveryPhase;

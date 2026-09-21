@@ -79,3 +79,26 @@ test('automatic consent is separate, requires configured collection and records 
   assert.equal((await store.read()).authorization.automaticCollection, false);
   assert.equal((await store.read()).authorization.enabled, true);
 });
+
+test('new collection rules stay unapproved on resume and can be separately approved from the standard command', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-standard-policy-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const { default: entry, bindStandardHost: bind } = await import('../dist/standard.js?policy-update');
+  const owner = { accountId: 'test', userId: 'alice' }, store = new FileStateStore({ owner, directory: root, policyVersion: 'v1' });
+  const client = { owner, async recall() { return []; } };
+  const delivery = new MemoryDelivery({ store, transport: client, maxPayloadBytes: 8192 });
+  await delivery.enable('v1'); await delivery.authorizeCollection({ policyVersion: 'v1', scope: null, boundaries: [] }); await delivery.pause();
+  bind({ owner, client, stateStore: store, async assertToolIsolation() {}, wakeDelivery() {},
+    policy: { maxPayloadBytes: 8192, recallTimeoutMs: 100, recallTokenBudget: 100, recallLimit: 1, minimumScore: 0, countTokens: t => t.length },
+    collection: { policyVersion: 'v2', lifecycleTimeoutMs: 1000,
+      sessions: { async register() {}, async boundaries() { return []; } }, wake() {} } },
+    { workspace: root, async assertIsolated() {}, async execute() {} });
+  const commands = new Map(), notifications = [], prompts = [];
+  await entry({ on() {}, registerTool() {}, registerCommand: (name, command) => commands.set(name, command) });
+  const ctx = { hasUI: true, sessionManager: {}, ui: { async confirm(title) { prompts.push(title); return true; }, notify: text => notifications.push(text) } };
+  const run = action => commands.get('memory').handler(action, ctx);
+  await run('enable'); assert.equal((await store.read()).authorization.collectionConsent.policyVersion, 'v1');
+  assert(notifications.at(-1).includes('新增规则需单独重新授权'));
+  await run('status'); assert(notifications.at(-1).includes('新增规则需通过 /memory auto-enable'));
+  await run('auto-enable'); assert.equal((await store.read()).authorization.collectionConsent.policyVersion, 'v2');
+  assert.deepEqual(prompts, ['启用长期记忆', '单独授权自动采集']);
+});

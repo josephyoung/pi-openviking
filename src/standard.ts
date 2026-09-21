@@ -44,10 +44,13 @@ export default async function openViking(pi: ExtensionAPI): Promise<void> {
           if (!state.authorization.enabled) {
             const signal = AbortSignal.timeout(options.collection?.lifecycleTimeoutMs ?? options.policy.recallTimeoutMs);
             if (options.collection) await options.collection.sessions.register(ctx.sessionManager, signal);
-            await delivery.enable(state.authorization.policyVersion, await options.collection?.sessions.boundaries(signal) ?? []);
+            await delivery.enable(options.collection?.policyVersion ?? state.authorization.policyVersion, await options.collection?.sessions.boundaries(signal) ?? []);
           }
           const enabled = await options.stateStore.read();
-          ctx.ui.notify(`长期记忆已启用；自动采集${enabled.authorization.automaticCollection ? '沿用独立授权，仅采集恢复后的新请求' : '未授权'}。请重新发起需要保存的事实。`, 'info');
+          const changedRules = enabled.authorization.automaticCollection && options.collection?.policyVersion
+            && enabled.authorization.collectionConsent?.policyVersion !== options.collection.policyVersion;
+          ctx.ui.notify(`长期记忆已启用；自动采集${changedRules ? '沿用原授权，新增规则需单独重新授权'
+            : enabled.authorization.automaticCollection ? '沿用独立授权，仅采集恢复后的新请求' : '未授权'}。请重新发起需要保存的事实。`, 'info');
         } else if (action === 'auto-enable') {
           if (!options.collection) { ctx.ui.notify('宿主尚未配置自动采集。', 'warning'); return; }
           await worker.assertIsolated();
@@ -59,7 +62,7 @@ export default async function openViking(pi: ExtensionAPI): Promise<void> {
           if (!accepted) return;
           const signal = AbortSignal.timeout(options.collection.lifecycleTimeoutMs);
           await options.collection.sessions.register(ctx.sessionManager, signal);
-          await delivery.authorizeCollection({ policyVersion: state.authorization.policyVersion, scope: options.scope ?? null,
+          await delivery.authorizeCollection({ policyVersion: options.collection.policyVersion ?? state.authorization.policyVersion, scope: options.scope ?? null,
             boundaries: await options.collection.sessions.boundaries(signal) });
           try { options.collection.wake(); } catch { /* durable owner polling recovers */ }
           ctx.ui.notify('自动采集已单独授权，仅处理此刻之后开始并完成的新请求。', 'info');
@@ -74,6 +77,10 @@ export default async function openViking(pi: ExtensionAPI): Promise<void> {
           const recent = Object.values(state.operations).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 20);
           const summary = [`长期记忆：${state.authorization.enabled ? '已启用' : '已暂停'}；自动采集：${state.authorization.automaticCollection ? '已授权' : '未授权'}`,
             ...recent.map(operation => `${statusLabels[operation.phase]} · ${operation.createdAt} · ${operation.id}`)];
+          if (state.authorization.automaticCollection && options.collection?.policyVersion
+            && state.authorization.collectionConsent?.policyVersion !== options.collection.policyVersion) {
+            summary.push('采集规则已更新；新增规则需通过 /memory auto-enable 单独重新授权。');
+          }
           const failures = Object.values(state.collectionRequests ?? {}).filter(request => request.phase === 'selection_failed');
           if (failures.length) summary.push(`自动采集未完成：${failures.length} 项，尚未保存为长期记忆。`);
           ctx.ui.notify(summary.join('\n'), 'info');

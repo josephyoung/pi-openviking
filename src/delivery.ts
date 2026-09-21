@@ -1,3 +1,4 @@
+import { isTaskFactProjection } from './task-facts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
 import { checkedOwner, sameOwner, isCollectionSource, collectionReferenceRequest, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
@@ -103,7 +104,7 @@ export class MemoryDelivery {
       // a new boundary: old automatic work cannot inherit the resumed policy.
       if (previous.automaticCollection && previous.collectionConsent) {
         state.authorization.collectionConsent = { ...previous.collectionConsent,
-          revision: previous.collectionConsent.revision + 1, effectiveAt, policyVersion,
+          revision: previous.collectionConsent.revision + 1, effectiveAt,
           boundaries: structuredClone(boundaries) };
       }
       blockUnsent(state);
@@ -190,7 +191,7 @@ export class MemoryDelivery {
           && sameSource(source, state.collectionRequests[request!.confirmationReference!.requestId].completedAssistant!));
       const groups = new Map<string, { source: CollectionSource; facts: SelectedCollectionFact[]; texts: string[]; payloadDigest: string }>();
       for (const fact of selected.facts) {
-        if (!fact || typeof fact.text !== 'string' || !fact.text.trim() || !validSource(fact.source)
+        if (!fact || (fact.projection !== undefined && (!isTaskFactProjection(fact.projection) || fact.evidence?.length !== 1)) || typeof fact.text !== 'string' || !fact.text.trim() || !validSource(fact.source)
           || !Array.isArray(fact.evidence) || !fact.evidence.length || fact.evidence.length > 2
           || fact.evidence.some((evidence, index) => !evidence || !(validSource(evidence.source)
             || (index === 0 && fact.evidence.length === 2 && validReference(evidence.source, fact.source)))
@@ -209,7 +210,9 @@ export class MemoryDelivery {
         group.payloadDigest = digest(JSON.stringify(group.texts));
       }
       const selectionDigest = digest(JSON.stringify([selected.requestIds.slice().sort(compare),
-        ordered.map(([key, group]) => [key, group.payloadDigest])]));
+        ordered.map(([key, group]) => group.facts.some(fact => fact.projection)
+          ? [key, group.payloadDigest, group.facts.map(fact => [fact.text, fact.projection ?? null]).sort((a, b) => compare(String(a[0]), String(b[0])))]
+          : [key, group.payloadDigest])]));
       if (requests.every(request => request!.phase === 'processed')) {
         if (requests.some(request => request!.selectionDigest !== selectionDigest)) {
           return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
@@ -227,7 +230,8 @@ export class MemoryDelivery {
       if (!authorization.enabled || !authorization.automaticCollection
         || authorization.epoch !== first.authorizationEpoch
         || authorization.collectionConsent?.revision !== first.collectionRevision
-        || authorization.collectionConsent.scope !== first.scope) {
+        || authorization.collectionConsent.scope !== first.scope
+        || selected.facts.some(fact => fact.projection && fact.projection.policyVersion !== authorization.collectionConsent!.policyVersion)) {
         return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
       }
       const operationIds = new Set<string>();
@@ -242,7 +246,7 @@ export class MemoryDelivery {
       if (pending.length) {
         // Only necessary fact text is sent. Confirmation quotes remain hashed
         // provenance, not another raw conversation copy or provider instruction.
-        const payload = JSON.stringify({ type: 'user_confirmed_memory_facts',
+        const payload = JSON.stringify({ type: 'authorized_memory_facts',
           facts: [...new Set(pending.flatMap(([, group]) => group.texts))] });
         if (Buffer.byteLength(payload) > this.#maxPayloadBytes) {
           return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_INPUT_LIMIT' };
@@ -251,7 +255,7 @@ export class MemoryDelivery {
           first.authorizationEpoch, first.collectionRevision, selectionDigest]));
         if (state.operations[id]) throw new Error('MEMORY_COLLECTION_RECEIPT_MISSING');
         const evidence = pending.flatMap(([, group]) => group.facts.flatMap(fact => fact.evidence
-          .map(item => ({ source: { ...item.source }, quoteDigest: digest(item.quote) }))));
+          .map(item => ({ source: { ...item.source }, quoteDigest: digest(item.quote), ...(fact.projection ? { projection: { ...fact.projection } } : {}) }))));
         const operation: Operation = { id, owner: state.owner, scope: first.scope,
           source: { ...pending[0][1].source }, kind: 'automatic', authorizationEpoch: first.authorizationEpoch,
           collectionRevision: first.collectionRevision, collectionSources: pending.map(([, group]) => ({ ...group.source })),

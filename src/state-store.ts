@@ -1,3 +1,4 @@
+import { isTaskFactProjection } from './task-facts.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { join, resolve, isAbsolute } from 'node:path';
@@ -120,6 +121,7 @@ function verify(state: OwnerState, owner: Owner): void {
     if (operation.collectionEvidence !== undefined && (operation.kind !== 'automatic'
       || !Array.isArray(operation.collectionEvidence) || !operation.collectionEvidence.length
       || operation.collectionEvidence.some(evidence => !evidence || !isCollectionSource(evidence.source)
+        || (evidence.projection !== undefined && !isTaskFactProjection(evidence.projection))
         || typeof evidence.quoteDigest !== 'string' || !/^[a-f0-9]{64}$/.test(evidence.quoteDigest)))) {
       throw new Error('INVALID_COLLECTION_PROVENANCE');
     }
