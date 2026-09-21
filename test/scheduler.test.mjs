@@ -11,7 +11,11 @@ async function until(check) {
 }
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-scheduler-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const schedulers = [];
+  t.after(async () => {
+    await Promise.all(schedulers.map(scheduler => scheduler.stop()));
+    await rm(directory, { recursive: true, force: true });
+  });
   const owner = { accountId: 'test', userId: 'alice' };
   const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
   const calls = [];
@@ -25,13 +29,17 @@ async function setup(t) {
   const operation = await delivery.save({ sessionId: 'chat', entryId: 'entry', branchId: 'root', contentVersion: '1' }, 'fact');
   const options = { store, delivery, pollIntervalMs: 5, initialBackoffMs: 10, maxBackoffMs: 40,
     maxAttemptsPerPhase: 3, maxOperationsPerTick: 2 };
-  return { store, delivery, transport, calls, operation, options };
+  const createScheduler = configuration => {
+    const scheduler = new DeliveryScheduler(configuration);
+    schedulers.push(scheduler);
+    return scheduler;
+  };
+  return { store, delivery, transport, calls, operation, options, createScheduler };
 }
 
 test('startup drains durable work without a viewer or a new save request', async t => {
   const f = await setup(t);
-  const scheduler = new DeliveryScheduler(f.options);
-  t.after(() => scheduler.stop(100));
+  const scheduler = f.createScheduler(f.options);
   scheduler.start(); scheduler.start();
   await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'ready');
   assert.deepEqual(f.calls, ['create', 'append', 'commit']);
@@ -41,8 +49,7 @@ test('unknown outcomes back off and terminate visibly without repeating the muta
   const f = await setup(t);
   f.transport.append = async () => { f.calls.push('append'); throw new Error('lost'); };
   const status = [];
-  const scheduler = new DeliveryScheduler({ ...f.options, onStatus: value => status.push(value) });
-  t.after(() => scheduler.stop(100));
+  const scheduler = f.createScheduler({ ...f.options, onStatus: value => status.push(value) });
   scheduler.start();
   await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'blocked');
   const operation = (await f.store.read()).operations[f.operation.id];
@@ -60,7 +67,7 @@ test('restart preserves backoff and attempt counts; stopping prevents new delive
     operation.nextAttemptAt = Date.now() + 60_000;
     operation.deliveryAttempts = 2;
   });
-  const scheduler = new DeliveryScheduler(f.options);
+  const scheduler = f.createScheduler(f.options);
   scheduler.start();
   await sleep(40);
   assert.deepEqual(f.calls, []);
@@ -69,17 +76,15 @@ test('restart preserves backoff and attempt counts; stopping prevents new delive
   await f.store.transact(state => { state.operations[f.operation.id].nextAttemptAt = 0; });
   await sleep(20);
   assert.deepEqual(f.calls, []);
-  const restarted = new DeliveryScheduler(f.options);
-  t.after(() => restarted.stop(100));
+  const restarted = f.createScheduler(f.options);
   restarted.start();
   await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'ready');
 });
 
 test('owner mismatch is rejected and observer exceptions cannot kill delivery', async t => {
   const f = await setup(t);
-  assert.throws(() => new DeliveryScheduler({ ...f.options, delivery: { owner: { accountId: 'test', userId: 'bob' }, advance() {} } }), /OWNER_MISMATCH/);
-  const scheduler = new DeliveryScheduler({ ...f.options, onStatus() { throw new Error('observer'); } });
-  t.after(() => scheduler.stop(100));
+  assert.throws(() => f.createScheduler({ ...f.options, delivery: { owner: { accountId: 'test', userId: 'bob' }, advance() {} } }), /OWNER_MISMATCH/);
+  const scheduler = f.createScheduler({ ...f.options, onStatus() { throw new Error('observer'); } });
   scheduler.start();
   await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'ready');
 });
@@ -100,7 +105,7 @@ test('bounded stop reports unfinished persistence and an unbounded stop waits fo
   };
   f.transport.createSession = async () => { f.calls.push('create'); remoteResponded = true; };
   const delivery = new MemoryDelivery({ store, transport: f.transport, maxPayloadBytes: 4096 });
-  const scheduler = new DeliveryScheduler({ ...f.options, store, delivery });
+  const scheduler = f.createScheduler({ ...f.options, store, delivery });
   try {
     scheduler.start();
     await until(() => writingReceipt);
