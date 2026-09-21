@@ -72,3 +72,17 @@ test('automatic consent without its durable policy boundary is rejected without 
   const { readFile } = await import('node:fs/promises');
   assert.equal(await readFile(file, 'utf8'), invalid);
 });
+
+test('a corrupt source receipt cannot silently permit re-collection', async t => {
+  const options = await fixture(t);
+  const store = new FileStateStore(options);
+  await store.transact(() => {});
+  const state = await store.read();
+  state.collectedSources = { ['a'.repeat(64)]: { operationId: 'b'.repeat(64), payloadDigest: 'c'.repeat(64) } };
+  const invalid = JSON.stringify(state);
+  const file = join(options.directory, 'state.json');
+  await writeFile(file, invalid);
+  await assert.rejects(store.read(), /INVALID_COLLECTION_LEDGER/);
+  const { readFile } = await import('node:fs/promises');
+  assert.equal(await readFile(file, 'utf8'), invalid);
+});

@@ -39,6 +39,16 @@ export interface Source {
   contentVersion: string;
 }
 
+/** Original persisted entry timestamp is preserved when pi copies fork ancestors. */
+export interface CollectionSource extends Source {
+  entryTimestamp: string;
+}
+
+export interface CollectedSource {
+  operationId: string;
+  payloadDigest: string;
+}
+
 export interface Operation {
   id: string;
   owner: Owner;
@@ -66,6 +76,8 @@ export interface OwnerState {
   revision: number;
   authorization: Authorization;
   operations: Record<string, Operation>;
+  /** Source receipts contain no conversation text and survive consent changes. */
+  collectedSources?: Record<string, CollectedSource>;
 }
 
 export interface StateStore {

@@ -10,7 +10,7 @@ export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
 export { MemoryDelivery } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
-export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent } from './types.js';
+export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource } from './types.js';
 
 export type MemoryModel = Pick<NonNullable<ExtensionContext['model']>, 'id' | 'provider' | 'api'>;
 

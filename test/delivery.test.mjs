@@ -29,7 +29,7 @@ async function setup(t, lose = new Set()) {
   };
   return { ...recreate(), recreate, remote, transport };
 }
-const source = { sessionId: 'chat', entryId: 'entry', branchId: 'branch', contentVersion: 'v1' };
+const source = { sessionId: 'chat', entryId: 'entry', branchId: 'branch', contentVersion: 'v1', entryTimestamp: '2026-09-21T00:00:00.000Z' };
 
 test('disabled save sends nothing; enable does not authorize automatic collection', async t => {
   const { service, store, remote } = await setup(t);
@@ -215,3 +215,86 @@ for (const change of ['pause', 'revokeCollection']) {
     });
   }
 }
+
+test('fork ancestors and concurrent viewers share one durable automatic source receipt', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const policy = await authorize(f);
+  const results = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    f.recreate().service.collect({ ...source, sessionId: `fork-${i}`, branchId: `leaf-${i}` }, 'fact', policy)));
+  assert.equal(new Set(results.map(result => result.id)).size, 1);
+  const first = results[0];
+  f.remote.ready = true;
+  for (let i = 0; i < 4; i++) await f.recreate().service.advance(first.id);
+  assert.deepEqual(f.remote.mutations, ['create', 'append', 'commit']);
+  const state = await f.recreate().store.read();
+  assert.equal(state.operations[first.id].payload, undefined);
+  assert.equal(Object.keys(state.collectedSources).length, 1);
+  assert.equal(Object.keys(state.operations).length, 1);
+  assert.equal((await f.recreate().service.collect(source, 'fact', policy)).phase, 'ready');
+  // Conflict detection remains effective after successful payload erasure.
+  await assert.rejects(f.recreate().service.collect(source, 'different fact', policy), /MEMORY_SOURCE_CONFLICT/);
+});
+
+test('a fresh consent cannot resurrect a source cleared by pause, including on another branch', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const first = await f.service.collect(source, 'fact', await authorize(f));
+  await f.service.pause();
+  await f.service.enable('v2', boundary);
+  const repeated = await f.recreate().service.collect({ ...source, sessionId: 'fork', branchId: 'new-leaf' }, 'fact', await consent(f));
+  assert.equal(repeated.id, first.id);
+  assert.equal(repeated.phase, 'blocked_by_pause');
+  assert.equal(repeated.payload, undefined);
+  await f.service.advance(repeated.id);
+  assert.deepEqual(f.remote.mutations, []);
+  assert.equal(Object.keys((await f.store.read()).operations).length, 1);
+});
+
+test('reused short entry IDs do not deduplicate independently created messages', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const policy = await authorize(f);
+  const first = await f.service.collect(source, 'fact', policy);
+  const distinct = await f.service.collect({ ...source, entryTimestamp: '2026-09-21T00:00:01.000Z' }, 'fact', policy);
+  assert.notEqual(distinct.id, first.id);
+  await assert.rejects(f.service.collect({ ...source, entryTimestamp: undefined }, 'fact', policy), /INVALID_COLLECTION_SOURCE/);
+});
+
+test('failed atomic enqueue does not leave a source consumed without an outbox record', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const policy = await authorize(f);
+  const failing = new MemoryDelivery({ transport: f.transport, maxPayloadBytes: 8192,
+    store: { owner: f.store.owner, read: () => f.store.read(),
+      transact: mutation => f.store.transact(state => { mutation(state); throw new Error('disk failure before commit'); }) } });
+  await assert.rejects(failing.collect(source, 'fact', policy), /disk failure/);
+  const state = await f.recreate().store.read();
+  assert.deepEqual(state.operations, {});
+  assert.equal(state.collectedSources, undefined);
+  assert.equal((await f.recreate().service.collect(source, 'fact', policy)).phase, 'queued');
+});
+
+test('real pi fork preserves source identity even when labels change the ancestry chain', async t => {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const { createHash } = await import('node:crypto');
+  const pi = SessionManager.inMemory('/private/tmp');
+  const first = pi.appendMessage({ role: 'user', content: 'I prefer concise reports.', timestamp: Date.now() });
+  pi.appendLabelChange(first, 'preference');
+  const leaf = pi.appendMessage({ role: 'user', content: 'Use a short conclusion.', timestamp: Date.now() });
+  const entry = pi.getEntry(leaf);
+  const makeSource = () => ({ sessionId: pi.getSessionId(), branchId: pi.getLeafId(),
+    entryId: entry.id, entryTimestamp: entry.timestamp,
+    contentVersion: createHash('sha256').update(JSON.stringify(entry.message)).digest('hex') });
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const policy = await authorize(f);
+  const originalSource = makeSource();
+  const original = await f.service.collect(originalSource, 'Use a short conclusion.', policy);
+  pi.createBranchedSession(leaf);
+  assert.notEqual(pi.getSessionId(), originalSource.sessionId);
+  assert.equal(pi.getEntry(leaf).timestamp, entry.timestamp);
+  assert.notEqual(pi.getEntry(leaf).parentId, entry.parentId);
+  assert.equal((await f.recreate().service.collect(makeSource(), 'Use a short conclusion.', policy)).id, original.id);
+  assert.equal(Object.keys((await f.store.read()).operations).length, 1);
+});

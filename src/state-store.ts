@@ -41,6 +41,19 @@ function verify(state: OwnerState, owner: Owner): void {
       || new Set(consent.boundaries.map(boundary => boundary.sessionId)).size !== consent.boundaries.length))) {
     throw new Error('INVALID_COLLECTION_CONSENT');
   }
+  if (state.collectedSources !== undefined) {
+    if (!state.collectedSources || typeof state.collectedSources !== 'object' || Array.isArray(state.collectedSources)) {
+      throw new Error('INVALID_COLLECTION_LEDGER');
+    }
+    for (const [key, receipt] of Object.entries(state.collectedSources)) {
+      if (!/^[a-f0-9]{64}$/.test(key) || !receipt
+        || typeof receipt.operationId !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.operationId)
+        || typeof receipt.payloadDigest !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.payloadDigest)
+        || state.operations[receipt.operationId]?.kind !== 'automatic') {
+        throw new Error('INVALID_COLLECTION_LEDGER');
+      }
+    }
+  }
   for (const [id, operation] of Object.entries(state.operations)) {
     if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
       throw new Error('MEMORY_OWNER_MISMATCH');

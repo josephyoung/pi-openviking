@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { checkedOwner, sameOwner, type CollectionBoundary, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
+import { checkedOwner, sameOwner, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
 
 /** Each method is owner-bound. Reconciliation never mutates the service. */
 export interface DeliveryTransport {
@@ -125,14 +125,20 @@ export class MemoryDelivery {
   }
 
   /** Collect only against the policy captured for this source, never latest consent. */
-  async collect(source: Source, content: string, policy: { epoch: number; collectionRevision: number }, scope: string | null = null): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
+  async collect(source: CollectionSource, content: string, policy: { epoch: number; collectionRevision: number }, scope: string | null = null): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
     if (!policy || !Number.isSafeInteger(policy.epoch) || policy.epoch < 0
       || !Number.isSafeInteger(policy.collectionRevision) || policy.collectionRevision < 1) throw new Error('INVALID_COLLECTION_POLICY');
-    return this.#enqueue(source, content, scope, 'automatic', policy.epoch, policy.collectionRevision);
+    if (typeof source?.entryTimestamp !== 'string' || !Number.isFinite(Date.parse(source.entryTimestamp))) {
+      throw new Error('INVALID_COLLECTION_SOURCE');
+    }
+    // Session and branch change on fork; copied entries keep their identity.
+    const sourceKey = createHash('sha256').update(JSON.stringify([this.owner, scope,
+      source.entryId, source.entryTimestamp, source.contentVersion])).digest('hex');
+    return this.#enqueue(source, content, scope, 'automatic', policy.epoch, policy.collectionRevision, sourceKey);
   }
 
   async #enqueue(source: Source, content: string, scope: string | null, kind: Operation['kind'], expectedEpoch?: number,
-    collectionRevision?: number): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
+    collectionRevision?: number, sourceKey?: string): Promise<Operation | { phase: 'blocked'; errorCode: string }> {
     if (typeof content !== 'string' || !content.trim() || Buffer.byteLength(content) > this.#maxPayloadBytes
         || !source || ![source.sessionId, source.entryId, source.branchId, source.contentVersion].every(x => typeof x === 'string' && x.length > 0)) {
       throw new Error('INVALID_MEMORY_SOURCE');
@@ -149,6 +155,14 @@ export class MemoryDelivery {
         || scope !== state.authorization.collectionConsent?.scope)) {
         return { phase: 'blocked', errorCode: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
       }
+      const payloadDigest = createHash('sha256').update(content).digest('hex');
+      const receipt = sourceKey === undefined ? undefined : state.collectedSources?.[sourceKey];
+      if (receipt) {
+        if (receipt.payloadDigest !== payloadDigest) throw new Error('MEMORY_SOURCE_CONFLICT');
+        // Return the original terminal/unknown receipt; never revive it with a
+        // new grant, session, branch or delivery identifier.
+        return structuredClone(state.operations[receipt.operationId]);
+      }
       const identity: unknown[] = [state.owner, scope, source, state.authorization.epoch];
       if (kind === 'automatic') identity.push(kind, collectionRevision);
       const id = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
@@ -164,6 +178,10 @@ export class MemoryDelivery {
         phase: 'queued', remoteSessionId: randomUUID(), payload: content,
       };
       state.operations[id] = operation;
+      if (sourceKey !== undefined) {
+        state.collectedSources ??= {};
+        state.collectedSources[sourceKey] = { operationId: id, payloadDigest };
+      }
       return structuredClone(operation);
     });
   }
