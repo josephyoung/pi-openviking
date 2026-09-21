@@ -29,6 +29,16 @@ function maySend(state: OwnerState, operation: Operation): boolean {
       && authorization.collectionConsent.scope === operation.scope));
 }
 function blockUnsent(state: OwnerState): void {
+  for (const request of Object.values(state.collectionRequests ?? {})) {
+    const authorization = state.authorization;
+    if (['running', 'settled'].includes(request.phase) && (!authorization.enabled
+      || !authorization.automaticCollection || request.authorizationEpoch !== authorization.epoch
+      || request.collectionRevision !== authorization.collectionConsent?.revision
+      || request.scope !== authorization.collectionConsent?.scope)) {
+      request.phase = 'blocked_by_pause';
+      request.updatedAt = new Date().toISOString();
+    }
+  }
   for (const operation of Object.values(state.operations)) {
     if (unsent.has(operation.phase) && !maySend(state, operation)) {
       operation.phase = 'blocked_by_pause';

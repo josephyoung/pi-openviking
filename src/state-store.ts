@@ -41,6 +41,25 @@ function verify(state: OwnerState, owner: Owner): void {
       || new Set(consent.boundaries.map(boundary => boundary.sessionId)).size !== consent.boundaries.length))) {
     throw new Error('INVALID_COLLECTION_CONSENT');
   }
+  if (state.collectionRequests !== undefined) {
+    if (!state.collectionRequests || typeof state.collectionRequests !== 'object' || Array.isArray(state.collectionRequests)) {
+      throw new Error('INVALID_COLLECTION_REQUEST');
+    }
+    for (const [id, request] of Object.entries(state.collectionRequests)) {
+      if (!request || request.id !== id || !id || typeof request.sessionId !== 'string' || !request.sessionId
+        || (request.baselineEntryId !== null && (typeof request.baselineEntryId !== 'string' || !request.baselineEntryId))
+        || (request.scope !== null && (typeof request.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.scope)))
+        || !Number.isSafeInteger(request.authorizationEpoch) || request.authorizationEpoch < 0
+        || !Number.isSafeInteger(request.collectionRevision) || request.collectionRevision < 1
+        || !['running', 'settled', 'discarded', 'blocked_by_pause'].includes(request.phase)
+        || !Array.isArray(request.sourceEntries) || request.sourceEntries.some(entry => typeof entry !== 'string' || !entry)
+        || new Set(request.sourceEntries).size !== request.sourceEntries.length
+        || ![request.createdAt, request.updatedAt].every(time => typeof time === 'string' && Number.isFinite(Date.parse(time)))
+        || (request.phase === 'settled' && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
+        throw new Error('INVALID_COLLECTION_REQUEST');
+      }
+    }
+  }
   if (state.collectedSources !== undefined) {
     if (!state.collectedSources || typeof state.collectedSources !== 'object' || Array.isArray(state.collectedSources)) {
       throw new Error('INVALID_COLLECTION_LEDGER');

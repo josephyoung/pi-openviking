@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { CollectionLifecycle } from './collection-lifecycle.js';
 import { MemoryDelivery, type DeliveryTransport } from './delivery.js';
 import type { RecalledMemory } from './openviking-client.js';
 import { sameOwner, type Owner, type StateStore } from './types.js';
@@ -8,9 +9,10 @@ import { sameOwner, type Owner, type StateStore } from './types.js';
 export { protectedMemoryResources } from './resource-profile.js';
 export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
+export { CollectionLifecycle } from './collection-lifecycle.js';
 export { MemoryDelivery } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
-export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource } from './types.js';
+export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';
 
 export type MemoryModel = Pick<NonNullable<ExtensionContext['model']>, 'id' | 'provider' | 'api'>;
 
@@ -51,6 +53,9 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
     if (registered.has(pi)) throw new Error('DUPLICATE_MEMORY_EXTENSION');
     registered.add(pi);
     pi.on('project_trust', () => ({ trusted: 'no', remember: false }));
+    const collection = new CollectionLifecycle(options.stateStore, options.scope ?? null);
+    let collectionRequest: string | undefined;
+    let waitingPrompts = 0;
     let query = '';
     let cached: { revision: number; modelKey: string; text: string } | undefined;
     let lifetime = new AbortController();
@@ -61,12 +66,28 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
       query = '';
       cached = undefined;
     };
-    pi.on('session_start', reset);
-    pi.on('session_shutdown', () => { lifetime.abort(); cached = undefined; query = ''; });
-    pi.on('session_before_switch', reset);
-    pi.on('session_before_fork', reset);
-    pi.on('session_before_tree', reset);
-    pi.on('before_agent_start', event => { reset(); query = event.prompt; });
+    const resetSession = () => { reset(); collectionRequest = undefined; waitingPrompts = 0; };
+    pi.on('session_start', resetSession);
+    pi.on('session_shutdown', () => { lifetime.abort(); cached = undefined; query = ''; collectionRequest = undefined; waitingPrompts = 0; });
+    pi.on('session_before_switch', resetSession);
+    pi.on('session_before_fork', resetSession);
+    pi.on('session_before_tree', resetSession);
+    pi.on('ui_prompt_start', () => { waitingPrompts++; });
+    pi.on('ui_prompt_end', () => { waitingPrompts = Math.max(0, waitingPrompts - 1); });
+    pi.on('before_agent_start', async (event, ctx) => {
+      reset(); query = event.prompt;
+      try {
+        await options.assertToolIsolation();
+        collectionRequest = await collection.begin(ctx.sessionManager, collectionRequest);
+      } catch { collectionRequest = undefined; }
+    });
+    pi.on('agent_settled', async (_event, ctx) => {
+      if (!collectionRequest) return;
+      try {
+        const receipt = await collection.settle(collectionRequest, ctx.sessionManager, waitingPrompts > 0);
+        if (receipt?.phase !== 'running') collectionRequest = undefined;
+      } catch { /* Keep the durable unfinished request; never infer success. */ }
+    });
 
     pi.registerTool({
       name: 'memory_save', label: '记住',

@@ -86,3 +86,19 @@ test('a corrupt source receipt cannot silently permit re-collection', async t =>
   const { readFile } = await import('node:fs/promises');
   assert.equal(await readFile(file, 'utf8'), invalid);
 });
+
+test('a malformed settled request cannot invent completed source references', async t => {
+  const options = await fixture(t);
+  const store = new FileStateStore(options);
+  await store.transact(() => {});
+  const state = await store.read();
+  state.collectionRequests = { request: { id: 'request', sessionId: 'chat', baselineEntryId: null,
+    scope: null, authorizationEpoch: 1, collectionRevision: 1, phase: 'settled',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), sourceEntries: [] } };
+  const invalid = JSON.stringify(state);
+  const file = join(options.directory, 'state.json');
+  await writeFile(file, invalid);
+  await assert.rejects(store.read(), /INVALID_COLLECTION_REQUEST/);
+  const { readFile } = await import('node:fs/promises');
+  assert.equal(await readFile(file, 'utf8'), invalid);
+});

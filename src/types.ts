@@ -70,6 +70,21 @@ export interface Operation {
   nextAttemptAt?: number;
 }
 
+/** Metadata only: messages remain in pi's original session store. */
+export interface CollectionRequest {
+  id: string;
+  sessionId: string;
+  baselineEntryId: string | null;
+  settledEntryId?: string;
+  scope: string | null;
+  authorizationEpoch: number;
+  collectionRevision: number;
+  phase: 'running' | 'settled' | 'discarded' | 'blocked_by_pause';
+  createdAt: string;
+  updatedAt: string;
+  sourceEntries: string[];
+}
+
 export interface OwnerState {
   version: 1;
   owner: Owner;
@@ -78,6 +93,7 @@ export interface OwnerState {
   operations: Record<string, Operation>;
   /** Source receipts contain no conversation text and survive consent changes. */
   collectedSources?: Record<string, CollectedSource>;
+  collectionRequests?: Record<string, CollectionRequest>;
 }
 
 export interface StateStore {
