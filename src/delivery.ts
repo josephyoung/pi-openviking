@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
-import { checkedOwner, sameOwner, isCollectionSource, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
+import { checkedOwner, sameOwner, isCollectionSource, collectionReferenceRequest, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
 
 /** Each method is owner-bound. Reconciliation never mutates the service. */
 export interface DeliveryTransport {
@@ -182,11 +182,18 @@ export class MemoryDelivery {
       const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
       const validSource = (source: CollectionSource) => isCollectionSource(source)
         && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
+      const validReference = (source: CollectionSource, anchor: CollectionSource) => isCollectionSource(source)
+        && requests.some(request => request!.confirmationReference
+          && (request!.phase === 'processed' || collectionReferenceRequest(state, request!))
+          && request!.confirmationReference!.entryId === source.entryId && request!.sourceEntries.includes(anchor.entryId)
+          && state.collectionRequests?.[request!.confirmationReference!.requestId]?.completedAssistant
+          && sameSource(source, state.collectionRequests[request!.confirmationReference!.requestId].completedAssistant!));
       const groups = new Map<string, { source: CollectionSource; facts: SelectedCollectionFact[]; texts: string[]; payloadDigest: string }>();
       for (const fact of selected.facts) {
         if (!fact || typeof fact.text !== 'string' || !fact.text.trim() || !validSource(fact.source)
           || !Array.isArray(fact.evidence) || !fact.evidence.length || fact.evidence.length > 2
-          || fact.evidence.some(evidence => !evidence || !validSource(evidence.source)
+          || fact.evidence.some((evidence, index) => !evidence || !(validSource(evidence.source)
+            || (index === 0 && fact.evidence.length === 2 && validReference(evidence.source, fact.source)))
             || typeof evidence.quote !== 'string' || !evidence.quote.trim())
           || fact.evidence[0].quote !== fact.text || !sameSource(fact.source, fact.evidence.at(-1)!.source)) {
           throw new Error('INVALID_COLLECTION_SELECTION');

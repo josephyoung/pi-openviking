@@ -65,6 +65,18 @@ function verify(state: OwnerState, owner: Owner): void {
         || (['settled', 'processed', 'selection_failed'].includes(request.phase) && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
         throw new Error('INVALID_COLLECTION_REQUEST');
       }
+      if (request.completedAssistant !== undefined && (!isCollectionSource(request.completedAssistant)
+        || request.completedAssistant.sessionId !== request.sessionId || request.completedAssistant.branchId !== request.settledEntryId
+        || !request.sourceEntries.includes(request.completedAssistant.entryId))) throw new Error('INVALID_COLLECTION_COMPLETION');
+      const reference = request.confirmationReference;
+      if (reference !== undefined) {
+        const prior = state.collectionRequests[reference?.requestId];
+        if (!reference || typeof reference.requestId !== 'string' || !reference.requestId
+          || typeof reference.entryId !== 'string' || !reference.entryId || !prior || prior.id === request.id
+          || prior.scope !== request.scope
+          || prior.authorizationEpoch !== request.authorizationEpoch || prior.collectionRevision !== request.collectionRevision
+          || prior.completedAssistant?.entryId !== reference.entryId || !prior.sourceEntries.includes(reference.entryId)) throw new Error('INVALID_COLLECTION_REFERENCE');
+      }
       if ((request.selectionAttempts !== undefined && (!Number.isSafeInteger(request.selectionAttempts) || request.selectionAttempts < 0))
         || (request.selectionNextAttemptAt !== undefined && (!Number.isSafeInteger(request.selectionNextAttemptAt) || request.selectionNextAttemptAt < 0))
         || (request.selectionErrorCode !== undefined && (typeof request.selectionErrorCode !== 'string' || !/^MEMORY_[A-Z_]+$/.test(request.selectionErrorCode)))

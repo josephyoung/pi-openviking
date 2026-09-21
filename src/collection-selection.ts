@@ -85,9 +85,16 @@ export class CollectionFactSelector {
           signal.throwIfAborted();
           const input = await this.#builder.build(request.id, session, signal);
           if (input.status !== 'ready') return input;
-          messages.push(...input.messages);
-
+          for (const message of input.messages) {
+            if (!lineage.has(message.source.entryId)) return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
+            const existing = messages.find(item => item.source.entryId === message.source.entryId);
+            if (existing && (existing.source.contentVersion !== message.source.contentVersion || existing.text !== message.text)) {
+              return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
+            }
+            if (!existing) messages.push(message);
+          }
         }
+        messages.sort((a, b) => positions.get(a.source.entryId)! - positions.get(b.source.entryId)!);
         if (!messages.some(message => message.role === 'user')) return { status: 'ready', requestIds: ids, facts: [] };
         const data = JSON.stringify({ messages: messages.map((message, index) => ({
           sourceId: `m${index}`, role: message.role, text: message.text,

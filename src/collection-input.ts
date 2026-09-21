@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lintSource } from '@secretlint/core';
 import { rules } from '@secretlint/secretlint-rule-preset-recommend';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { CollectionRequest, CollectionSource, StateStore } from './types.js';
+import { collectionReferenceRequest, type CollectionRequest, type CollectionSource, type StateStore } from './types.js';
 
 // Conversation text is never allowed to suppress a scanner finding.
 const scanners = rules.filter(rule => rule.meta.id !== '@secretlint/secretlint-rule-filter-comments')
@@ -55,15 +55,21 @@ export class CollectionInputBuilder {
         && current.authorization.collectionConsent?.revision === request.collectionRevision
         && current.authorization.collectionConsent.scope === scope;
       if (!request || !permitted(state)) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+      const referenceRequest = collectionReferenceRequest(state, request);
+      if (request.confirmationReference && !referenceRequest) return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
+      const referenceId = request.confirmationReference?.entryId;
       const secrets = [...(await this.options.sensitiveValues?.(signal) ?? [])];
       const messages: CollectionInputMessage[] = [];
       const excludedEntries: string[] = [];
       let bytes = 0;
-      for (const id of request.sourceEntries) {
+      for (const id of [...(referenceId ? [referenceId] : []), ...request.sourceEntries]) {
         signal?.throwIfAborted();
         const entry = session.getEntry(id);
         if (!entry || entry.type !== 'message') return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
         const message = entry.message;
+        if (id === referenceId && (message.role !== 'assistant' || message.stopReason !== 'stop'
+          || entry.timestamp !== referenceRequest!.completedAssistant!.entryTimestamp
+          || createHash('sha256').update(JSON.stringify(message)).digest('hex') !== referenceRequest!.completedAssistant!.contentVersion)) return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
         if (message.role !== 'user' && message.role !== 'assistant') { excludedEntries.push(id); continue; }
         if (message.role === 'assistant' && message.stopReason !== 'stop') { excludedEntries.push(id); continue; }
         const text = typeof message.content === 'string' ? message.content : message.content
@@ -80,7 +86,7 @@ export class CollectionInputBuilder {
         const scan = await lintSource({ source: { content: normalized, contentType: 'text', filePath: 'conversation.txt' },
           options: { noPhysicFilePath: true, maskSecrets: true, config: { rules: scanners } } });
         if (scan.messages.length > 0) { excludedEntries.push(id); continue; }
-        messages.push({ source: { sessionId: request.sessionId, entryId: entry.id,
+        messages.push({ source: id === referenceId ? { ...referenceRequest!.completedAssistant! } : { sessionId: request.sessionId, entryId: entry.id,
           entryTimestamp: entry.timestamp, branchId: request.settledEntryId!,
           contentVersion: createHash('sha256').update(JSON.stringify(message)).digest('hex') },
           role: message.role === 'user' ? 'user' : 'assistant_reference', text });

@@ -82,6 +82,9 @@ export interface CollectionRequest {
   authorizationEpoch: number;
   collectionRevision: number;
   phase: 'running' | 'settled' | 'processed' | 'discarded' | 'blocked_by_pause' | 'selection_failed';
+  /** Adjacent completed assistant proposition, evidence only, never a new source. */
+  completedAssistant?: CollectionSource;
+  confirmationReference?: { requestId: string; entryId: string };
   selectionAttempts?: number;
   selectionNextAttemptAt?: number;
   selectionLease?: { id: string; expiresAt: number };
@@ -131,4 +134,15 @@ export function isCollectionSource(value: unknown): value is CollectionSource {
   return [source.sessionId, source.entryId, source.branchId, source.contentVersion]
     .every(item => typeof item === 'string' && item.length > 0)
     && typeof source.entryTimestamp === 'string' && Number.isFinite(Date.parse(source.entryTimestamp));
+}
+
+/** A reference can cross a processed batch, but never a consent/scope boundary. */
+export function collectionReferenceRequest(state: OwnerState, request: CollectionRequest): CollectionRequest | undefined {
+  const reference = request.confirmationReference;
+  const prior = reference && state.collectionRequests?.[reference.requestId];
+  return prior && prior.id !== request.id && prior.scope === request.scope
+    && prior.authorizationEpoch === request.authorizationEpoch && prior.collectionRevision === request.collectionRevision
+    && ['settled', 'processed', 'selection_failed'].includes(prior.phase)
+    && prior.completedAssistant?.entryId === reference!.entryId && prior.sourceEntries.includes(reference!.entryId)
+    ? prior : undefined;
 }

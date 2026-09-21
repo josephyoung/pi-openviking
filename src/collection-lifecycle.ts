@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { CollectionRequest, StateStore } from './types.js';
 
@@ -31,11 +31,20 @@ export class CollectionLifecycle {
           prior.updatedAt = new Date().toISOString();
         }
       }
+      const preceding = [...branch].reverse().find(entry => entry.type === 'message');
+      const prior = preceding?.type === 'message' && preceding.message.role === 'assistant' && preceding.message.stopReason === 'stop'
+        ? Object.values(state.collectionRequests).find(request => request.scope === this.scope
+          && request.completedAssistant?.entryId === preceding.id && request.completedAssistant.entryTimestamp === preceding.timestamp
+          && request.completedAssistant.contentVersion === createHash('sha256').update(JSON.stringify(preceding.message)).digest('hex')
+          && request.authorizationEpoch === authorization.epoch && request.collectionRevision === consent.revision
+          && ['settled', 'processed', 'selection_failed'].includes(request.phase) && request.sourceEntries.includes(preceding.id))
+        : undefined;
       const id = randomUUID();
       const now = new Date().toISOString();
       state.collectionRequests[id] = { id, sessionId, baselineEntryId, scope: this.scope,
         authorizationEpoch: authorization.epoch, collectionRevision: consent.revision,
-        phase: 'running', createdAt: now, updatedAt: now, sourceEntries: [] };
+        phase: 'running', createdAt: now, updatedAt: now, sourceEntries: [],
+        ...(prior && preceding ? { confirmationReference: { requestId: prior.id, entryId: preceding.id } } : {}) };
       return id;
     }, signal);
   }
@@ -71,6 +80,8 @@ export class CollectionLifecycle {
           request.phase = 'settled';
           request.settledEntryId = branch.at(-1)!.id;
           request.sourceEntries = messages.map(entry => entry.id);
+          request.completedAssistant = { sessionId, entryId: final.id, entryTimestamp: final.timestamp,
+            branchId: request.settledEntryId, contentVersion: createHash('sha256').update(JSON.stringify(final.message)).digest('hex') };
         }
       }
       request.updatedAt = new Date().toISOString();

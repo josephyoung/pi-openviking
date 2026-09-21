@@ -308,3 +308,12 @@ chosen provider; collection remains unavailable when the section is absent.
 
 Dano adapter wiring, cross-batch confirmation context, declassified task facts,
 and full browser consent/lifecycle acceptance remain pending for this branch.
+
+Cross-batch confirmation uses one adjacent, completed assistant proposition as
+screened evidence. The new user's explicit confirmation is the collection source;
+an already-processed request never becomes pending again. Completion metadata
+records the original entry timestamp and message digest, so a copied fork ancestor
+can retain its original provenance while a reused short ID or changed content
+cannot borrow it. This reference must remain in the same owner, scope, authorization
+epoch and collection revision. Pause/resume or renewed consent does not import the
+older proposition. No historical user messages are pulled into the new batch.
