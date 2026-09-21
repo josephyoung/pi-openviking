@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { explicitSaveSource } from './explicit-save-source.js';
 import { lintSource } from '@secretlint/core';
 import { rules } from '@secretlint/secretlint-rule-preset-recommend';
 import type { TaskFactPolicy, TaskFactProjection } from './task-facts.js';
@@ -23,7 +24,9 @@ const credentialDeclarations = [
 export interface CollectionInputMessage {
   source: CollectionSource;
   /** An assistant reference is never itself an authorized fact. */
-  role: 'user' | 'assistant_reference' | 'task_fact';
+  role: 'user' | 'assistant_reference' | 'task_fact' | 'explicit_memory';
+  /** Verified owner-state receipt; never a selectable source. */
+  explicitOperationId?: string;
   projection?: TaskFactProjection;
   text: string;
 }
@@ -85,16 +88,18 @@ export class CollectionInputBuilder {
       const secrets = [...(await this.options.sensitiveValues?.(signal) ?? [])];
       const messages: CollectionInputMessage[] = [];
       const excludedEntries: string[] = [];
-      const calls = new Map<string, Array<{ name: string; index: number }>>();
+      const calls = new Map<string, Array<{ name: string; index: number; content?: unknown; userEntryId?: string }>>();
+      let userEntryId: string | undefined;
       const resultCounts = new Map<string, number>();
       for (const [index, id] of request.sourceEntries.entries()) {
         const entry = session.getEntry(id);
         if (entry?.type !== 'message') continue;
         const message = entry.message;
+        if (message.role === 'user') userEntryId = entry.id;
         if (message.role === 'assistant' && message.stopReason === 'toolUse') {
           for (const block of message.content) if (block.type === 'toolCall') {
             const previous = calls.get(block.id) ?? [];
-            previous.push({ name: block.name, index }); calls.set(block.id, previous);
+            previous.push({ name: block.name, index, content: block.arguments?.content, userEntryId }); calls.set(block.id, previous);
           }
         } else if (message.role === 'toolResult') resultCounts.set(message.toolCallId, (resultCounts.get(message.toolCallId) ?? 0) + 1);
       }
@@ -110,21 +115,44 @@ export class CollectionInputBuilder {
         let text: string;
         let role: CollectionInputMessage['role'];
         let projection: TaskFactProjection | undefined;
+        let explicitOperationId: string | undefined;
         if (message.role === 'toolResult') {
-          const project = this.#taskFacts?.policyVersion === state.authorization.collectionConsent!.policyVersion
-            ? this.#taskFacts.tools.get(message.toolName) : undefined;
           const matching = calls.get(message.toolCallId);
-          if (!project || message.isError !== false || resultCounts.get(message.toolCallId) !== 1 || matching?.length !== 1
+          if (message.isError !== false || resultCounts.get(message.toolCallId) !== 1 || matching?.length !== 1
             || matching[0].name !== message.toolName || matching[0].index >= request.sourceEntries.indexOf(id)) {
             excludedEntries.push(id); continue;
           }
-          // Never give host projection code a live mutable pi entry.
-          const projected = await project(structuredClone(message), { owner: { ...state.owner }, scope, signal });
-          signal?.throwIfAborted();
-          if (projected === undefined) { excludedEntries.push(id); continue; }
-          if (typeof projected !== 'string') throw new Error('INVALID_TASK_FACT_RESULT');
-          text = projected; role = 'task_fact';
-          projection = { toolName: message.toolName, policyVersion: this.#taskFacts!.policyVersion };
+          if (message.toolName === 'memory_save') {
+            const call = matching[0];
+            const details = message.details as { operationId?: unknown } | undefined;
+            const operation = typeof details?.operationId === 'string' ? state.operations[details.operationId] : undefined;
+            const user = call.userEntryId ? session.getEntry(call.userEntryId) : undefined;
+            const source = user?.type === 'message' && typeof call.content === 'string'
+              ? explicitSaveSource(request.sessionId, user, call.content) : undefined;
+            // Match the protected explicit receipt to the actual call and user
+            // entry. A tool result claiming "saved" cannot suppress collection.
+            if (!operation || operation.kind !== 'explicit' || operation.scope !== scope
+              || operation.authorizationEpoch !== request.authorizationEpoch
+              || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)
+              || operation.owner.accountId !== state.owner.accountId || operation.owner.userId !== state.owner.userId
+              || !user || user.type !== 'message' || user.message.role !== 'user' || typeof call.content !== 'string'
+              || !source || operation.source.entryId !== source.entryId || operation.source.branchId !== source.branchId
+              || operation.source.contentVersion !== source.contentVersion) {
+              excludedEntries.push(id); continue;
+            }
+            text = call.content; role = 'explicit_memory'; explicitOperationId = operation.id;
+          } else {
+            const project = this.#taskFacts?.policyVersion === state.authorization.collectionConsent!.policyVersion
+              ? this.#taskFacts.tools.get(message.toolName) : undefined;
+            if (!project) { excludedEntries.push(id); continue; }
+            // Never give host projection code a live mutable pi entry.
+            const projected = await project(structuredClone(message), { owner: { ...state.owner }, scope, signal });
+            signal?.throwIfAborted();
+            if (projected === undefined) { excludedEntries.push(id); continue; }
+            if (typeof projected !== 'string') throw new Error('INVALID_TASK_FACT_RESULT');
+            text = projected; role = 'task_fact';
+            projection = { toolName: message.toolName, policyVersion: this.#taskFacts!.policyVersion };
+          }
         } else {
           if (message.role !== 'user' && message.role !== 'assistant') { excludedEntries.push(id); continue; }
           if (message.role === 'assistant' && message.stopReason !== 'stop') { excludedEntries.push(id); continue; }
@@ -167,7 +195,7 @@ export class CollectionInputBuilder {
         messages.push({ source: id === referenceId ? { ...referenceRequest!.completedAssistant! } : { sessionId: request.sessionId, entryId: entry.id,
           entryTimestamp: entry.timestamp, branchId: request.settledEntryId!,
           contentVersion: createHash('sha256').update(JSON.stringify(message)).digest('hex') },
-          role, text, ...(projection ? { projection } : {}) });
+          role, text, ...(projection ? { projection } : {}), ...(explicitOperationId ? { explicitOperationId } : {}) });
       }
       // Scanning/host secret discovery must not bypass a concurrent pause/revoke.
       if (!permitted(await this.options.store.read(signal))) return { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
