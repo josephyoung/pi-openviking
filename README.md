@@ -242,7 +242,7 @@ and workflow filename `publish.yml`, with permission to publish. No npm token
 is stored in GitHub secrets. The trust relationship must be configured on npm
 before the first automated release.
 
-## Automatic collection host API (unreleased)
+## Automatic collection host API (0.1.3)
 
 `CollectionLifecycle` journals completed pi requests without copying conversation
 bodies. `CollectionFactSelector` screens original entries and selects source-backed
