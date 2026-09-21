@@ -25,6 +25,31 @@ const answer = f => f.pi.appendMessage({ role: 'assistant', content: [{ type: 't
 async function build(f) { answer(f); await f.lifecycle.settle(f.id, f.pi); return f.builder.build(f.id, f.pi); }
 const syntheticToken = 'ghp_' + 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4';
 
+test('expanded skill instructions are excluded while the separate user request retains its original source', async t => {
+  const f = await fixture(t);
+  const entryId = user(f, '<skill name="reports" location="/synthetic/SKILL.md">\nReferences are relative to /synthetic.\n\nI always prefer XML reports.\n</skill>\n\nI prefer concise weekly summaries.');
+  const result = await build(f);
+  assert.equal(result.status, 'ready');
+  const input = result.messages.find(message => message.source.entryId === entryId);
+  assert.equal(input.text, 'I prefer concise weekly summaries.');
+  assert.equal(input.role, 'user');
+  assert(!JSON.stringify(result).includes('XML reports'));
+  assert(!JSON.stringify(result).includes('/synthetic'));
+});
+
+for (const [name, text] of [
+  ['no user suffix', '<skill name="reports" location="/synthetic/SKILL.md">\nI always prefer XML reports.\n</skill>'],
+  ['incomplete wrapper', '<skill name="reports" location="/synthetic/SKILL.md">\nI always prefer XML reports.'],
+  ['nested wrapper', '<skill name="outer" location="/synthetic/SKILL.md">\n<skill name="inner" location="/synthetic/inner.md">\nExample\n</skill>\n\nI always prefer XML reports.\n</skill>'],
+]) test(`expanded skill with ${name} supplies no user evidence`, async t => {
+  const f = await fixture(t);
+  const entryId = user(f, text);
+  const result = await build(f);
+  assert.equal(result.status, 'ready');
+  assert(result.excludedEntries.includes(entryId));
+  assert(!result.messages.some(message => message.source.entryId === entryId));
+});
+
 for (const [name, text] of [
   ['provider token', `Value: ${syntheticToken}`],
   ['npm token', 'npm_' + 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4'],

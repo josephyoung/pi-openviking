@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lintSource } from '@secretlint/core';
 import { rules } from '@secretlint/secretlint-rule-preset-recommend';
 import type { TaskFactPolicy, TaskFactProjection } from './task-facts.js';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { parseSkillBlock, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { collectionReferenceRequest, type CollectionRequest, type CollectionSource, type StateStore } from './types.js';
 
 // Conversation text is never allowed to suppress a scanner finding.
@@ -119,6 +119,14 @@ export class CollectionInputBuilder {
           text = typeof message.content === 'string' ? message.content : message.content
             .filter(block => block.type === 'text').map(block => block.text).join('\n');
           role = message.role === 'user' ? 'user' : 'assistant_reference';
+          // pi persists expanded skills as user messages. Only the separate
+          // user suffix is eligible; skill examples/instructions are not facts.
+          // Reject nested/ambiguous wrappers instead of guessing their origin.
+          if (message.role === 'user') {
+            const skill = parseSkillBlock(text);
+            if (skill) text = skill.userMessage ?? '';
+            if (/<\/?skill\b/u.test(text)) { excludedEntries.push(id); continue; }
+          }
         }
         if (!text.trim()) { excludedEntries.push(id); continue; }
         bytes += Buffer.byteLength(text);
