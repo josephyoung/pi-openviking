@@ -25,3 +25,10 @@ reported undici and brace-expansion vulnerabilities. Root overrides did not
 replace the old package's bundled shrinkwrap. The current exact peer resolves
 undici 8.9.0 and brace-expansion 5.0.9 and passes `npm audit` with zero findings
 on 2026-09-18. Re-audit the final host image and later releases separately.
+
+- `@secretlint/core@13.0.5` and
+  `@secretlint/secretlint-rule-preset-recommend@13.0.5` declare MIT and ship their
+  LICENSE files. They are unmodified runtime dependencies for local text
+  screening. The recommended preset bundles scanner implementations; preserve
+  its original copyright/license notices in distributions. The adapter excludes
+  its comment-suppression scanner so conversation content cannot disable checks.

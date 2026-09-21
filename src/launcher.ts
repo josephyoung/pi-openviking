@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { bootstrapProtectedWorker } from './bootstrap.js';
 import type { MemoryExtensionOptions } from './host.js';
 import type { DeliveryScheduler } from './scheduler.js';
+import type { CollectionScheduler } from './collection-scheduler.js';
 
 export type BootstrapOptions = Parameters<typeof bootstrapProtectedWorker>[0];
 export interface LauncherProfile extends BootstrapOptions {
@@ -15,6 +16,7 @@ export interface LauncherProfile extends BootstrapOptions {
 export interface StandardHost {
   memory: MemoryExtensionOptions;
   scheduler: DeliveryScheduler;
+  collectionScheduler?: CollectionScheduler;
 }
 
 /** The launcher is a chat entry, not a package/configuration administration shell. */
@@ -58,6 +60,7 @@ export async function runProtectedPi(profile: LauncherProfile, args: readonly st
     const { bindStandardHost, default: standard } = await import('./standard.js');
     bindStandardHost(host.memory, worker);
     host.scheduler.start();
+    host.collectionScheduler?.start();
     // Resolve the same peer installation as the worker. No private pi imports.
     const { readFile } = await import('node:fs/promises');
     const piRoot = resolve(dirname(piPackageContext), 'node_modules/@earendil-works/pi-coding-agent');
@@ -66,8 +69,11 @@ export async function runProtectedPi(profile: LauncherProfile, args: readonly st
     await pi.main(cliArgs, { extensionFactories: [{ name: 'openviking', factory: standard }] });
   } finally {
     try {
-      if (host && !await host.scheduler.stop(profile.shutdownTimeoutMs)) {
-        throw new Error('MEMORY_SHUTDOWN_INCOMPLETE');
+      try { await host?.collectionScheduler?.stop(); }
+      finally {
+        if (host && !await host.scheduler.stop(profile.shutdownTimeoutMs)) {
+          throw new Error('MEMORY_SHUTDOWN_INCOMPLETE');
+        }
       }
     } finally { worker.close(); }
   }

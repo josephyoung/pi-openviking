@@ -241,3 +241,121 @@ Publishing uses npm Trusted Publishing bound to `josephyoung/pi-openviking`
 and workflow filename `publish.yml`, with permission to publish. No npm token
 is stored in GitHub secrets. The trust relationship must be configured on npm
 before the first automated release.
+
+## Automatic collection host API (0.1.3)
+
+`CollectionLifecycle` journals completed pi requests without copying conversation
+bodies. `CollectionFactSelector` screens original entries and selects source-backed
+facts using the trusted host's model callback. `CollectionScheduler` runs once per
+owner, independent of viewers: it merges settled requests within `mergeWindowMs`,
+forces a due batch at `maxWaitMs`, limits `maxRequestsPerBatch`, and atomically
+claims the batch before inference. `resolveSession(sessionId, signal)` must resolve
+only this owner's protected original session, including after process restart.
+It must never resolve a model-provided path or another owner's session.
+
+User-message roles alone do not prove authorship: pi can persist expanded Skill
+or prompt-template text as a user message. The built-in input projection uses
+pi's public Skill parser and excludes its instructions/examples. Hosts with
+unmarked prompt templates or injected user wrappers must also provide
+`projectUserText({ source, text, signal })` to `CollectionFactSelector`. Resolve
+the user-authored span from protected attribution records tied to the original
+entry digest, including after restart and forks. Return `undefined` when its
+origin cannot be proved; that excludes the entry without falling back to the
+template. Returned text must be a contiguous substring of the original message,
+and is still screened for credentials and checked against current consent.
+This callback is trusted host code, never a model or tool-provided function.
+The protected CLI disables prompt templates already. Dano's durable attribution
+adapter remains an integration requirement; the callback alone is not proof of
+complete template-origin handling.
+
+The scheduler persists attempts, next retry time and expiring claim tokens.
+A second process cannot start selection while an owner claim is live. Expired
+claims may be recovered, but only the current token can commit selection and
+outbox receipts. A pause/revocation invalidates the claim. `maxAttempts` bounds
+failures; exhausted requests become `selection_failed` with a fixed error code.
+These request failures need a host status projection; they are not saved memories.
+Network outcomes from actual OpenViking writes remain the delivery scheduler's
+responsibility and must be reconciled rather than resent.
+
+`workTimeoutMs` bounds source lookup and selection; configure `leaseMs` longer
+than that deadline with room for durable handoff. Call `wake()` after settlement
+and `start()` on owner startup to recover pending work. `stop()` aborts local
+selection and waits for bounded claim cleanup. It does not flush raw conversations
+or cancel a remote write. The supplied store supports `read(signal)` and
+`transact(mutation, signal)` to cancel lock waits; once an atomic write starts it
+finishes its durable commit. Custom stores and host callbacks should honor abort
+signals too. The scheduler also fences late callbacks at the handoff boundary.
+
+The host must still wire protected session recovery, the configured model and
+credential snapshot, separate consent controls, status and lifecycle ownership.
+This branch does not enable collection in the published package by itself.
+
+`CollectionSessionRegistry` supplies the owner's persistent source resolver.
+Configure it with that owner's private session root outside tool access, then
+pass `collection: { sessions, lifecycleTimeoutMs, wake }` to the extension.
+Before each request the extension records its original pi file reference; after
+`agent_settled` it wakes the owner scheduler only after durable settlement. The
+foreground deadline covers isolation/source registration and state lock waits.
+An optional `onError` callback receives a fixed lifecycle-unavailable code for
+status/logging without exposing source text. Without collection configuration,
+the extension does not journal automatic requests.
+Recovery reads original files through pi's public parser and an in-memory session
+manager, rejecting invalid, old-version, cross-root or mismatched sources without
+repairing them. Live branch positions use weak references for consent boundaries;
+recovery without a live session uses the persisted branch.
+
+Standard pi now offers `/memory auto-enable` with its own confirmation, and
+`/memory auto-disable` to revoke collection while keeping the main memory switch
+unchanged. These commands require a host with collection configured. Enabling or
+resuming the main switch never creates automatic consent; resume preserves an
+existing separate grant with a new source boundary. Selection failures are
+reported separately in `/memory status`.
+
+A standard host can return `collectionScheduler` alongside its delivery
+`scheduler`; the launcher starts and stops both. The acceptance host in
+`scripts/cli-memory-host.mjs` demonstrates optional administrator-owned
+`memory-connection.json.collection` configuration: `model` (provider, id,
+maxTokens, temperature and optional provider payload fields), `selector`
+(maxInputBytes, maxFacts, timeoutMs), the collection `scheduler` policy and
+`lifecycleTimeoutMs`. It uses the protected pi model/auth files and snapshots the
+model/service keys only for local input screening. Configure these fields for the
+chosen provider; collection remains unavailable when the section is absent.
+
+Dano adapter wiring, cross-batch confirmation context, declassified task facts,
+and full browser consent/lifecycle acceptance remain pending for this branch.
+
+Cross-batch confirmation uses one adjacent, completed assistant proposition as
+screened evidence. The new user's explicit confirmation is the collection source;
+an already-processed request never becomes pending again. Completion metadata
+records the original entry timestamp and message digest, so a copied fork ancestor
+can retain its original provenance while a reused short ID or changed content
+cannot borrow it. This reference must remain in the same owner, scope, authorization
+epoch and collection revision. Pause/resume or renewed consent does not import the
+older proposition. No historical user messages are pulled into the new batch.
+
+### Allowlisted task facts
+
+Raw tool arguments/results remain excluded by default. A host may configure
+`CollectionFactSelector` (or `CollectionInputBuilder`) with `taskFacts: {
+policyVersion, tools: new Map([[toolName, projector]]) }`. Projectors are trusted,
+installed host functions, not model parameters or browser configuration. They run
+locally and must verify their business result/actor contract and return only the
+necessary fact text, or `undefined`. Do not stringify raw content/details or use a
+model/network service inside the projector. The context supplies the bound owner,
+scope and cancellation signal; the result is a copy of the original tool result.
+
+Projection requires one matching earlier tool call, one successful result and the
+same separately authorized policy version. Failed, duplicate, unlisted or
+unmatched results never invoke the projector. Projected text passes the same
+credential scanner, private-key snapshot matching and byte budget as conversation
+candidates. The model receives only `task_fact` text with opaque source IDs, never
+the raw arguments/results. Selected task facts retain the original result source
+plus tool/policy provenance; only selected necessary fact text enters the outbox.
+
+Restoring the main switch preserves the existing collection grant's rule version.
+It does not authorize a new task-fact policy. Hosts can pass their current
+`collection.policyVersion` to the extension: standard pi reports changed rules
+and `/memory auto-enable` confirms the new version separately. Each grant/resume
+still establishes a new source boundary, with no backfill. Configure no projector
+for tools without a trusted business-result contract, including general-purpose
+shell output; the default empty allowlist remains intentional.
