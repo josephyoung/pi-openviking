@@ -59,6 +59,8 @@
   },
   "dependencies": {
     "@openviking/sdk": "0.1.0",
+    "@secretlint/core": "13.0.5",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
     "fs-ext": "2.1.1",
     "typebox": "1.1.38"
   },

@@ -9,6 +9,8 @@ import { sameOwner, type Owner, type StateStore } from './types.js';
 export { protectedMemoryResources } from './resource-profile.js';
 export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
+export { CollectionInputBuilder } from './collection-input.js';
+export type { CollectionInputMessage, CollectionInputResult } from './collection-input.js';
 export { CollectionLifecycle } from './collection-lifecycle.js';
 export { MemoryDelivery } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
