@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { flock } from 'fs-ext';
@@ -42,6 +42,11 @@ function verify(state: OwnerState, owner: Owner): void {
         || ![boundary.entryId, boundary.branchId].every(id => id === null || (typeof id === 'string' && id.length > 0)))
       || new Set(consent.boundaries.map(boundary => boundary.sessionId)).size !== consent.boundaries.length))) {
     throw new Error('INVALID_COLLECTION_CONSENT');
+  }
+  if (state.collectionSessionFiles !== undefined && (!state.collectionSessionFiles
+    || typeof state.collectionSessionFiles !== 'object' || Array.isArray(state.collectionSessionFiles)
+    || Object.entries(state.collectionSessionFiles).some(([id, path]) => !id || typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')))) {
+    throw new Error('INVALID_COLLECTION_SESSION_REGISTRY');
   }
   if (state.collectionRequests !== undefined) {
     if (!state.collectionRequests || typeof state.collectionRequests !== 'object' || Array.isArray(state.collectionRequests)) {

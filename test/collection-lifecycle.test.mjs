@@ -119,6 +119,7 @@ test('extension records settlement only on agent_settled, after intermediate too
   const handlers = new Map();
   createOpenVikingExtension({ owner: f.owner, client: f.transport, stateStore: f.store,
     assertToolIsolation: async () => {}, wakeDelivery() {},
+    collection: { sessions: { async register() {}, async boundaries() { return []; } }, lifecycleTimeoutMs: 2000, wake() {} },
     policy: { maxPayloadBytes: 8192, recallTimeoutMs: 50, recallTokenBudget: 1000, recallLimit: 5,
       minimumScore: 0.5, countTokens: text => text.length } })({
       on: (name, handler) => handlers.set(name, handler), registerTool() {},

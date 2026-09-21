@@ -274,3 +274,37 @@ signals too. The scheduler also fences late callbacks at the handoff boundary.
 The host must still wire protected session recovery, the configured model and
 credential snapshot, separate consent controls, status and lifecycle ownership.
 This branch does not enable collection in the published package by itself.
+
+`CollectionSessionRegistry` supplies the owner's persistent source resolver.
+Configure it with that owner's private session root outside tool access, then
+pass `collection: { sessions, lifecycleTimeoutMs, wake }` to the extension.
+Before each request the extension records its original pi file reference; after
+`agent_settled` it wakes the owner scheduler only after durable settlement. The
+foreground deadline covers isolation/source registration and state lock waits.
+An optional `onError` callback receives a fixed lifecycle-unavailable code for
+status/logging without exposing source text. Without collection configuration,
+the extension does not journal automatic requests.
+Recovery reads original files through pi's public parser and an in-memory session
+manager, rejecting invalid, old-version, cross-root or mismatched sources without
+repairing them. Live branch positions use weak references for consent boundaries;
+recovery without a live session uses the persisted branch.
+
+Standard pi now offers `/memory auto-enable` with its own confirmation, and
+`/memory auto-disable` to revoke collection while keeping the main memory switch
+unchanged. These commands require a host with collection configured. Enabling or
+resuming the main switch never creates automatic consent; resume preserves an
+existing separate grant with a new source boundary. Selection failures are
+reported separately in `/memory status`.
+
+A standard host can return `collectionScheduler` alongside its delivery
+`scheduler`; the launcher starts and stops both. The acceptance host in
+`scripts/cli-memory-host.mjs` demonstrates optional administrator-owned
+`memory-connection.json.collection` configuration: `model` (provider, id,
+maxTokens, temperature and optional provider payload fields), `selector`
+(maxInputBytes, maxFacts, timeoutMs), the collection `scheduler` policy and
+`lifecycleTimeoutMs`. It uses the protected pi model/auth files and snapshots the
+model/service keys only for local input screening. Configure these fields for the
+chosen provider; collection remains unavailable when the section is absent.
+
+Dano adapter wiring, cross-batch confirmation context, declassified task facts,
+and full browser consent/lifecycle acceptance remain pending for this branch.

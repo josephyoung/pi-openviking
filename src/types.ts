@@ -102,6 +102,8 @@ export interface OwnerState {
   /** Source receipts contain no conversation text and survive consent changes. */
   collectedSources?: Record<string, CollectedSource>;
   collectionRequests?: Record<string, CollectionRequest>;
+  /** Host-validated owner-private pi source paths, never browser/model input. */
+  collectionSessionFiles?: Record<string, string>;
 }
 
 export interface StateStore {

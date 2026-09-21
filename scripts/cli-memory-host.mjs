@@ -1,8 +1,8 @@
 // Real-service acceptance host. All configuration comes from protected files.
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FileStateStore, OwnerMemoryClient, MemoryDelivery, DeliveryScheduler } from '../dist/host.js';
+import { FileStateStore, OwnerMemoryClient, MemoryDelivery, DeliveryScheduler, CollectionSessionRegistry, CollectionFactSelector, CollectionScheduler } from '../dist/host.js';
 export async function createHost({ paths, assertToolIsolation }) {
   const config = JSON.parse(await readFile(join(paths.agentDir, 'memory-connection.json'), 'utf8'));
   if (!config.owner.accountId.startsWith('extension-test-')) throw new Error('DISPOSABLE_ACCOUNT_REQUIRED');
@@ -17,5 +17,31 @@ export async function createHost({ paths, assertToolIsolation }) {
   const delivery = new MemoryDelivery({ store: stateStore, transport: client, maxPayloadBytes: policy.maxPayloadBytes });
   const scheduler = new DeliveryScheduler({ store: stateStore, delivery, pollIntervalMs: 500,
     initialBackoffMs: 500, maxBackoffMs: 5000, maxAttemptsPerPhase: 90, maxOperationsPerTick: 5 });
-  return { memory: { owner: config.owner, stateStore, client, policy, assertToolIsolation, wakeDelivery: () => scheduler.wake() }, scheduler };
+  let collection, collectionScheduler;
+  if (config.collection) {
+    const { ModelRuntime } = await import('@earendil-works/pi-coding-agent');
+    const configured = config.collection;
+    const runtime = await ModelRuntime.create({ authPath: join(paths.agentDir, 'auth.json'),
+      modelsPath: join(paths.agentDir, 'models.json'), refreshOnCreate: false });
+    const model = runtime.getModel(configured.model.provider, configured.model.id);
+    if (!model) throw new Error('COLLECTION_MODEL_UNAVAILABLE');
+    await mkdir(join(paths.agentDir, 'sessions'), { recursive: true, mode: 0o700 });
+    const sessions = new CollectionSessionRegistry({ store: stateStore, sessionRoot: join(paths.agentDir, 'sessions') });
+    const selector = new CollectionFactSelector({ ...configured.selector, store: stateStore,
+      sensitiveValues: async signal => [config.apiKey, (await runtime.getAuth(model, { signal }))?.apiKey].filter(value => typeof value === 'string' && value.length),
+      async complete({ systemPrompt, data, signal }) {
+        await assertToolIsolation(); signal.throwIfAborted();
+        const answer = await runtime.completeSimple(model, { systemPrompt,
+          messages: [{ role: 'user', content: data, timestamp: Date.now() }] },
+          { signal, maxTokens: configured.model.maxTokens, temperature: configured.model.temperature,
+            onPayload: payload => ({ ...payload, ...configured.model.payload }) });
+        if (answer.stopReason !== 'stop') throw new Error('MEMORY_SELECTION_FAILED');
+        return answer.content.filter(block => block.type === 'text').map(block => block.text).join('');
+      } });
+    collectionScheduler = new CollectionScheduler({ ...configured.scheduler, store: stateStore, delivery, selector,
+      resolveSession: (id, signal) => sessions.resolveSession(id, signal), wakeDelivery: () => scheduler.wake() });
+    collection = { sessions, lifecycleTimeoutMs: configured.lifecycleTimeoutMs, wake: () => collectionScheduler.wake(), onError: code => console.error(code) };
+  }
+  return { memory: { owner: config.owner, stateStore, client, policy, collection, assertToolIsolation,
+    wakeDelivery: () => scheduler.wake() }, scheduler, collectionScheduler };
 }

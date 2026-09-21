@@ -44,3 +44,38 @@ test('standard entry binds tools and explicit management consent to the same wor
   assert.equal(state.authorization.enabled, false);
   assert.equal(state.operations[operation.id].phase, 'blocked_by_pause');
 });
+
+test('automatic consent is separate, requires configured collection and records fresh boundaries on resume', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-standard-auto-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { default: autoEntry, bindStandardHost: bind } = await import('../dist/standard.js?automatic-consent');
+  const owner = { accountId: 'test', userId: 'alice' };
+  const store = new FileStateStore({ owner, directory: root, policyVersion: 'v1' });
+  const worker = { workspace: root, async assertIsolated() {}, async execute() {} };
+  let leaf = 'first', confirmed = true, wakes = 0; const confirmations = [];
+  const registry = { async register() {}, async boundaries() { return [{ sessionId: 'current', entryId: leaf, branchId: leaf }]; } };
+  const client = { owner, async recall() { return []; } };
+  bind({ owner, client, stateStore: store, async assertToolIsolation() {},
+    policy: { maxPayloadBytes: 8192, recallTimeoutMs: 100, recallTokenBudget: 500, recallLimit: 3, minimumScore: 0, countTokens: t => t.length },
+    collection: { sessions: registry, lifecycleTimeoutMs: 100, wake() { wakes++; } }, wakeDelivery() {} }, worker);
+  const commands = new Map(), notifications = [];
+  await autoEntry({ registerTool() {}, on() {}, registerCommand: (name, command) => commands.set(name, command) });
+  const context = { hasUI: true, sessionManager: {}, ui: { async confirm(title) { confirmations.push(title); return confirmed; }, notify: text => notifications.push(text) } };
+  const run = action => commands.get('memory').handler(action, context);
+  await run('auto-enable'); assert.equal((await store.read()).authorization.automaticCollection, false);
+  await run('enable'); assert.equal((await store.read()).authorization.automaticCollection, false);
+  confirmed = false; await run('auto-enable'); assert.equal((await store.read()).authorization.automaticCollection, false);
+  confirmed = true; await run('auto-enable');
+  const original = (await store.read()).authorization.collectionConsent;
+  assert.equal(original.boundaries[0].entryId, 'first'); assert.equal(wakes, 1);
+  assert(confirmations.includes('单独授权自动采集')); assert(confirmations.includes('启用长期记忆'));
+  await run('pause'); leaf = 'after-paused-history'; await run('enable');
+  const resumed = (await store.read()).authorization;
+  assert.equal(resumed.automaticCollection, true);
+  assert(resumed.collectionConsent.revision > original.revision);
+  assert.equal(resumed.collectionConsent.boundaries[0].entryId, leaf);
+  assert(notifications.at(-1).includes('仅采集恢复后的新请求'));
+  await run('auto-disable');
+  assert.equal((await store.read()).authorization.automaticCollection, false);
+  assert.equal((await store.read()).authorization.enabled, true);
+});

@@ -9,11 +9,12 @@ export class CollectionLifecycle {
   constructor(readonly store: StateStore, readonly scope: string | null = null) {}
 
   /** Call before the new user entry is appended, never from a message-end hook. */
-  async begin(session: Session, continuationId?: string): Promise<string | undefined> {
+  async begin(session: Session, continuationId?: string, signal?: AbortSignal): Promise<string | undefined> {
     const sessionId = session.getSessionId();
     const branch = session.getBranch();
     const baselineEntryId = branch.at(-1)?.id ?? null;
     return this.store.transact(state => {
+      signal?.throwIfAborted();
       const authorization = state.authorization;
       const consent = authorization.collectionConsent;
       if (!authorization.enabled || !authorization.automaticCollection || !consent || consent.scope !== this.scope) return;
@@ -36,14 +37,15 @@ export class CollectionLifecycle {
         authorizationEpoch: authorization.epoch, collectionRevision: consent.revision,
         phase: 'running', createdAt: now, updatedAt: now, sourceEntries: [] };
       return id;
-    });
+    }, signal);
   }
 
   /** Only agent_settled may call this: turn_end/agent_end are insufficient. */
-  async settle(id: string, session: Session, waitingForInput = false): Promise<CollectionRequest | undefined> {
+  async settle(id: string, session: Session, waitingForInput = false, signal?: AbortSignal): Promise<CollectionRequest | undefined> {
     const sessionId = session.getSessionId();
     const branch = session.getBranch();
     return this.store.transact(state => {
+      signal?.throwIfAborted();
       const request = state.collectionRequests?.[id];
       if (!request || request.sessionId !== sessionId || request.scope !== this.scope) return;
       if (request.phase !== 'running') return structuredClone(request);
@@ -73,6 +75,6 @@ export class CollectionLifecycle {
       }
       request.updatedAt = new Date().toISOString();
       return structuredClone(request);
-    });
+    }, signal);
   }
 }
