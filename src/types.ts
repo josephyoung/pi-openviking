@@ -57,6 +57,8 @@ export interface Operation {
   kind: 'explicit' | 'automatic';
   authorizationEpoch: number;
   collectionRevision?: number;
+  collectionSources?: CollectionSource[];
+  collectionEvidence?: Array<{ source: CollectionSource; quoteDigest: string }>;
   createdAt: string;
   updatedAt: string;
   phase: DeliveryPhase;
@@ -79,7 +81,9 @@ export interface CollectionRequest {
   scope: string | null;
   authorizationEpoch: number;
   collectionRevision: number;
-  phase: 'running' | 'settled' | 'discarded' | 'blocked_by_pause';
+  phase: 'running' | 'settled' | 'processed' | 'discarded' | 'blocked_by_pause';
+  selectionDigest?: string;
+  operationIds?: string[];
   createdAt: string;
   updatedAt: string;
   sourceEntries: string[];
@@ -113,4 +117,12 @@ export function checkedOwner(owner: Owner): Owner {
 
 export function sameOwner(a: Owner, b: Owner): boolean {
   return a.accountId === b.accountId && a.userId === b.userId;
+}
+
+export function isCollectionSource(value: unknown): value is CollectionSource {
+  if (!value || typeof value !== 'object') return false;
+  const source = value as CollectionSource;
+  return [source.sessionId, source.entryId, source.branchId, source.contentVersion]
+    .every(item => typeof item === 'string' && item.length > 0)
+    && typeof source.entryTimestamp === 'string' && Number.isFinite(Date.parse(source.entryTimestamp));
 }

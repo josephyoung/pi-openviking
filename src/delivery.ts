@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { checkedOwner, sameOwner, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
+import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
+import { checkedOwner, sameOwner, isCollectionSource, type CollectionBoundary, type CollectionSource, type Operation, type Owner, type OwnerState, type Source, type StateStore } from './types.js';
 
 /** Each method is owner-bound. Reconciliation never mutates the service. */
 export interface DeliveryTransport {
@@ -59,6 +60,20 @@ function validateBoundary(policyVersion: string, boundaries: CollectionBoundary[
 function validateScope(scope: string | null): void {
   if (scope !== null && !/^[A-Za-z0-9_-]{1,128}$/.test(scope)) throw new Error('INVALID_MEMORY_SCOPE');
 }
+
+function collectionSourceKey(owner: Owner, scope: string | null, source: CollectionSource): string {
+  return digest(JSON.stringify([owner, scope, source.entryId, source.entryTimestamp, source.contentVersion]));
+}
+function digest(text: string): string { return createHash('sha256').update(text).digest('hex'); }
+function sameSource(a: CollectionSource, b: CollectionSource): boolean {
+  return a.sessionId === b.sessionId && a.entryId === b.entryId && a.branchId === b.branchId
+    && a.contentVersion === b.contentVersion && a.entryTimestamp === b.entryTimestamp;
+}
+function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
+export type CollectionHandoffResult =
+  | { status: 'recorded'; operationIds: string[] }
+  | { status: 'blocked'; errorCode: string };
 
 export class MemoryDelivery {
   readonly #store: StateStore;
@@ -142,9 +157,106 @@ export class MemoryDelivery {
       throw new Error('INVALID_COLLECTION_SOURCE');
     }
     // Session and branch change on fork; copied entries keep their identity.
-    const sourceKey = createHash('sha256').update(JSON.stringify([this.owner, scope,
-      source.entryId, source.entryTimestamp, source.contentVersion])).digest('hex');
+    const sourceKey = collectionSourceKey(this.owner, scope, source);
     return this.#enqueue(source, content, scope, 'automatic', policy.epoch, policy.collectionRevision, sourceKey);
+  }
+
+  /** Trusted selector output only. One durable commit covers results, sources and outbox. */
+  async collectSelection(selection: Extract<CollectionSelectionResult, { status: 'ready' }>): Promise<CollectionHandoffResult> {
+    const selected = structuredClone(selection);
+    if (!selected || selected.status !== 'ready' || !Array.isArray(selected.requestIds) || !selected.requestIds.length
+      || selected.requestIds.some(id => typeof id !== 'string' || !id)
+      || new Set(selected.requestIds).size !== selected.requestIds.length || !Array.isArray(selected.facts)) {
+      throw new Error('INVALID_COLLECTION_SELECTION');
+    }
+    return this.#store.transact(state => {
+      const requests = selected.requestIds.map(id => state.collectionRequests?.[id]);
+      const first = requests[0];
+      if (!first || requests.some(request => !request || request.scope !== first.scope
+        || request.sessionId !== first.sessionId || request.authorizationEpoch !== first.authorizationEpoch
+        || request.collectionRevision !== first.collectionRevision)) {
+        return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
+      }
+      const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
+      const validSource = (source: CollectionSource) => isCollectionSource(source)
+        && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
+      const groups = new Map<string, { source: CollectionSource; facts: SelectedCollectionFact[]; texts: string[]; payloadDigest: string }>();
+      for (const fact of selected.facts) {
+        if (!fact || typeof fact.text !== 'string' || !fact.text.trim() || !validSource(fact.source)
+          || !Array.isArray(fact.evidence) || !fact.evidence.length || fact.evidence.length > 2
+          || fact.evidence.some(evidence => !evidence || !validSource(evidence.source)
+            || typeof evidence.quote !== 'string' || !evidence.quote.trim())
+          || fact.evidence[0].quote !== fact.text || !sameSource(fact.source, fact.evidence.at(-1)!.source)) {
+          throw new Error('INVALID_COLLECTION_SELECTION');
+        }
+        const key = collectionSourceKey(state.owner, first.scope, fact.source);
+        const group = groups.get(key) ?? { source: fact.source, facts: [], texts: [], payloadDigest: '' };
+        if (!group.texts.includes(fact.text)) { group.texts.push(fact.text); group.facts.push(fact); }
+        groups.set(key, group);
+      }
+      const ordered = [...groups.entries()].sort(([a], [b]) => compare(a, b));
+      for (const [, group] of ordered) {
+        group.texts.sort(compare);
+        group.payloadDigest = digest(JSON.stringify(group.texts));
+      }
+      const selectionDigest = digest(JSON.stringify([selected.requestIds.slice().sort(compare),
+        ordered.map(([key, group]) => [key, group.payloadDigest])]));
+      if (requests.every(request => request!.phase === 'processed')) {
+        if (requests.some(request => request!.selectionDigest !== selectionDigest)) {
+          return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
+        }
+        return { status: 'recorded', operationIds: [...new Set(requests.flatMap(request => request!.operationIds!))] };
+      }
+      if (requests.some(request => request!.phase !== 'settled')) {
+        return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
+      }
+      const authorization = state.authorization;
+      if (!authorization.enabled || !authorization.automaticCollection
+        || authorization.epoch !== first.authorizationEpoch
+        || authorization.collectionConsent?.revision !== first.collectionRevision
+        || authorization.collectionConsent.scope !== first.scope) {
+        return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_NOT_AUTHORIZED' };
+      }
+      const operationIds = new Set<string>();
+      const pending = ordered.filter(([key, group]) => {
+        const receipt = state.collectedSources?.[key];
+        if (!receipt) return true;
+        if (receipt.payloadDigest !== group.payloadDigest) throw new Error('MEMORY_SOURCE_CONFLICT');
+        operationIds.add(receipt.operationId);
+        return false;
+      });
+      const now = new Date().toISOString();
+      if (pending.length) {
+        // Only necessary fact text is sent. Confirmation quotes remain hashed
+        // provenance, not another raw conversation copy or provider instruction.
+        const payload = JSON.stringify({ type: 'user_confirmed_memory_facts',
+          facts: [...new Set(pending.flatMap(([, group]) => group.texts))] });
+        if (Buffer.byteLength(payload) > this.#maxPayloadBytes) {
+          return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_INPUT_LIMIT' };
+        }
+        const id = digest(JSON.stringify([state.owner, first.scope, 'collection-batch',
+          first.authorizationEpoch, first.collectionRevision, selectionDigest]));
+        if (state.operations[id]) throw new Error('MEMORY_COLLECTION_RECEIPT_MISSING');
+        const evidence = pending.flatMap(([, group]) => group.facts.flatMap(fact => fact.evidence
+          .map(item => ({ source: { ...item.source }, quoteDigest: digest(item.quote) }))));
+        const operation: Operation = { id, owner: state.owner, scope: first.scope,
+          source: { ...pending[0][1].source }, kind: 'automatic', authorizationEpoch: first.authorizationEpoch,
+          collectionRevision: first.collectionRevision, collectionSources: pending.map(([, group]) => ({ ...group.source })),
+          collectionEvidence: evidence, createdAt: now, updatedAt: now, phase: 'queued',
+          remoteSessionId: randomUUID(), payload };
+        state.operations[id] = operation;
+        state.collectedSources ??= {};
+        for (const [key, group] of pending) state.collectedSources[key] = { operationId: id, payloadDigest: group.payloadDigest };
+        operationIds.add(id);
+      }
+      for (const request of requests) {
+        request!.phase = 'processed';
+        request!.selectionDigest = selectionDigest;
+        request!.operationIds = [...operationIds];
+        request!.updatedAt = now;
+      }
+      return { status: 'recorded', operationIds: [...operationIds] };
+    });
   }
 
   async #enqueue(source: Source, content: string, scope: string | null, kind: Operation['kind'], expectedEpoch?: number,

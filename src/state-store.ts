@@ -3,7 +3,7 @@ import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { flock } from 'fs-ext';
-import { checkedOwner, sameOwner, type Owner, type OwnerState, type StateStore } from './types.js';
+import { checkedOwner, sameOwner, isCollectionSource, type Owner, type OwnerState, type StateStore } from './types.js';
 
 async function lock(fd: number, operation: 'ex' | 'un'): Promise<void> {
   // Blocking flock consumes a libuv worker: enough waiting writers can starve
@@ -51,12 +51,20 @@ function verify(state: OwnerState, owner: Owner): void {
         || (request.scope !== null && (typeof request.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.scope)))
         || !Number.isSafeInteger(request.authorizationEpoch) || request.authorizationEpoch < 0
         || !Number.isSafeInteger(request.collectionRevision) || request.collectionRevision < 1
-        || !['running', 'settled', 'discarded', 'blocked_by_pause'].includes(request.phase)
+        || !['running', 'settled', 'processed', 'discarded', 'blocked_by_pause'].includes(request.phase)
         || !Array.isArray(request.sourceEntries) || request.sourceEntries.some(entry => typeof entry !== 'string' || !entry)
         || new Set(request.sourceEntries).size !== request.sourceEntries.length
         || ![request.createdAt, request.updatedAt].every(time => typeof time === 'string' && Number.isFinite(Date.parse(time)))
-        || (request.phase === 'settled' && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
+        || (['settled', 'processed'].includes(request.phase) && (typeof request.settledEntryId !== 'string' || !request.settledEntryId || !request.sourceEntries.length))) {
         throw new Error('INVALID_COLLECTION_REQUEST');
+      }
+      if (request.phase === 'processed' && (typeof request.selectionDigest !== 'string'
+        || !/^[a-f0-9]{64}$/.test(request.selectionDigest) || !Array.isArray(request.operationIds)
+        || new Set(request.operationIds).size !== request.operationIds.length
+        || request.operationIds.some(operationId => typeof operationId !== 'string'
+          || !/^[a-f0-9]{64}$/.test(operationId) || state.operations[operationId]?.kind !== 'automatic'
+          || state.operations[operationId]?.scope !== request.scope))) {
+        throw new Error('INVALID_COLLECTION_RECEIPT');
       }
     }
   }
@@ -76,6 +84,17 @@ function verify(state: OwnerState, owner: Owner): void {
   for (const [id, operation] of Object.entries(state.operations)) {
     if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
       throw new Error('MEMORY_OWNER_MISMATCH');
+    }
+    if (operation.collectionSources !== undefined && (operation.kind !== 'automatic'
+      || !Array.isArray(operation.collectionSources) || !operation.collectionSources.length
+      || operation.collectionSources.some(source => !isCollectionSource(source)))) {
+      throw new Error('INVALID_COLLECTION_PROVENANCE');
+    }
+    if (operation.collectionEvidence !== undefined && (operation.kind !== 'automatic'
+      || !Array.isArray(operation.collectionEvidence) || !operation.collectionEvidence.length
+      || operation.collectionEvidence.some(evidence => !evidence || !isCollectionSource(evidence.source)
+        || typeof evidence.quoteDigest !== 'string' || !/^[a-f0-9]{64}$/.test(evidence.quoteDigest)))) {
+      throw new Error('INVALID_COLLECTION_PROVENANCE');
     }
     if (!['explicit', 'automatic'].includes(operation.kind) || (operation.kind === 'automatic'
       && (!Number.isSafeInteger(operation.collectionRevision) || operation.collectionRevision! < 1))) {

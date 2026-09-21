@@ -102,3 +102,21 @@ test('a malformed settled request cannot invent completed source references', as
   const { readFile } = await import('node:fs/promises');
   assert.equal(await readFile(file, 'utf8'), invalid);
 });
+
+
+test('processed selection cannot refer to a missing automatic outbox operation', async t => {
+  const options = await fixture(t);
+  const store = new FileStateStore(options);
+  await store.transact(() => {});
+  const state = await store.read();
+  state.collectionRequests = { request: { id: 'request', sessionId: 'chat', baselineEntryId: null,
+    settledEntryId: 'last', scope: null, authorizationEpoch: 1, collectionRevision: 1, phase: 'processed',
+    selectionDigest: 'a'.repeat(64), operationIds: ['b'.repeat(64)],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), sourceEntries: ['user', 'last'] } };
+  const invalid = JSON.stringify(state);
+  const file = join(options.directory, 'state.json');
+  await writeFile(file, invalid);
+  await assert.rejects(store.read(), /INVALID_COLLECTION_RECEIPT/);
+  const { readFile } = await import('node:fs/promises');
+  assert.equal(await readFile(file, 'utf8'), invalid);
+});

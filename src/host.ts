@@ -15,6 +15,7 @@ export { CollectionInputBuilder } from './collection-input.js';
 export type { CollectionInputMessage, CollectionInputResult } from './collection-input.js';
 export { CollectionLifecycle } from './collection-lifecycle.js';
 export { MemoryDelivery } from './delivery.js';
+export type { CollectionHandoffResult } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
 export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';
 
