@@ -33,6 +33,15 @@ export type CollectionInputResult =
 
 type Session = Pick<ExtensionContext['sessionManager'], 'getSessionId' | 'getEntry'>;
 
+/** The host must resolve attribution from protected source records, never a model.
+ * Return only a contiguous user-authored span of the persisted message. Undefined
+ * excludes that entry; it must not mean falling back to an expanded template. */
+export type CollectionUserTextProjector = (input: {
+  source: CollectionSource;
+  text: string;
+  signal?: AbortSignal;
+}) => string | undefined | Promise<string | undefined>;
+
 /** Local-only screening; successful screening is not confirmation or permission to send. */
 export class CollectionInputBuilder {
   readonly #taskFacts?: TaskFactPolicy;
@@ -41,6 +50,9 @@ export class CollectionInputBuilder {
     scope?: string | null;
     maxInputBytes: number;
     taskFacts?: TaskFactPolicy;
+    /** Required for hosts that expand unmarked templates or inject user wrappers.
+     * Must remain resolvable after restart and for copied fork ancestors. */
+    projectUserText?: CollectionUserTextProjector;
     /** Trusted host snapshot. Never persisted, returned, or supplied by model input. */
     sensitiveValues?: (signal?: AbortSignal) => readonly string[] | Promise<readonly string[]>;
   }) {
@@ -119,6 +131,18 @@ export class CollectionInputBuilder {
           text = typeof message.content === 'string' ? message.content : message.content
             .filter(block => block.type === 'text').map(block => block.text).join('\n');
           role = message.role === 'user' ? 'user' : 'assistant_reference';
+          if (message.role === 'user' && this.options.projectUserText) {
+            const original = text;
+            const projected = await this.options.projectUserText({
+              source: { sessionId: request.sessionId, entryId: entry.id, entryTimestamp: entry.timestamp,
+                branchId: request.settledEntryId!, contentVersion: createHash('sha256').update(JSON.stringify(message)).digest('hex') },
+              text, signal,
+            });
+            signal?.throwIfAborted();
+            if (projected === undefined) { excludedEntries.push(id); continue; }
+            if (typeof projected !== 'string' || !original.includes(projected)) throw new Error('INVALID_USER_TEXT_PROJECTION');
+            text = projected;
+          }
           // pi persists expanded skills as user messages. Only the separate
           // user suffix is eligible; skill examples/instructions are not facts.
           // Reject nested/ambiguous wrappers instead of guessing their origin.

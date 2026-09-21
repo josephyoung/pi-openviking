@@ -253,6 +253,21 @@ claims the batch before inference. `resolveSession(sessionId, signal)` must reso
 only this owner's protected original session, including after process restart.
 It must never resolve a model-provided path or another owner's session.
 
+User-message roles alone do not prove authorship: pi can persist expanded Skill
+or prompt-template text as a user message. The built-in input projection uses
+pi's public Skill parser and excludes its instructions/examples. Hosts with
+unmarked prompt templates or injected user wrappers must also provide
+`projectUserText({ source, text, signal })` to `CollectionFactSelector`. Resolve
+the user-authored span from protected attribution records tied to the original
+entry digest, including after restart and forks. Return `undefined` when its
+origin cannot be proved; that excludes the entry without falling back to the
+template. Returned text must be a contiguous substring of the original message,
+and is still screened for credentials and checked against current consent.
+This callback is trusted host code, never a model or tool-provided function.
+The protected CLI disables prompt templates already. Dano's durable attribution
+adapter remains an integration requirement; the callback alone is not proof of
+complete template-origin handling.
+
 The scheduler persists attempts, next retry time and expiring claim tokens.
 A second process cannot start selection while an owner claim is live. Expired
 claims may be recovered, but only the current token can commit selection and

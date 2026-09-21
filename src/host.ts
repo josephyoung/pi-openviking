@@ -16,7 +16,7 @@ export { CollectionFactSelector, collectionSelectionPrompt } from './collection-
 export type { SelectedCollectionFact, CollectionSelectionResult } from './collection-selection.js';
 export type { TaskFactPolicy, TaskFactProjection, TaskFactProjector } from './task-facts.js';
 export { CollectionInputBuilder } from './collection-input.js';
-export type { CollectionInputMessage, CollectionInputResult } from './collection-input.js';
+export type { CollectionInputMessage, CollectionInputResult, CollectionUserTextProjector } from './collection-input.js';
 export { CollectionLifecycle } from './collection-lifecycle.js';
 export { CollectionSessionRegistry } from './collection-sessions.js';
 export { MemoryDelivery } from './delivery.js';

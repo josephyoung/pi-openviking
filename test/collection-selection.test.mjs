@@ -30,6 +30,18 @@ async function fixture(t) {
 }
 const json = facts => JSON.stringify({ facts });
 
+test('selector cannot promote excluded template examples even with an exact original-message quote', async t => {
+  const f = await fixture(t);
+  const id = await f.turn('Template example: I always prefer XML reports.\nUser request: I prefer concise summaries.');
+  const result = await f.selector(async ({ data }) => {
+    assert(!data.includes('XML reports'));
+    assert(data.includes('I prefer concise summaries.'));
+    return json([{ sourceId: 'm0', quote: 'I always prefer XML reports.' }]);
+  }, { projectUserText: () => 'I prefer concise summaries.' }).select([id], f.session);
+  assert.deepEqual(result, { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' });
+  assert.deepEqual((await f.store.read()).operations, {});
+});
+
 test('user facts retain exact source evidence; duplicates and irrelevant optional fields do not create extra facts', async t => {
   const f = await fixture(t);
   const id = await f.turn('I prefer concise reports.');

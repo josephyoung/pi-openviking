@@ -25,6 +25,50 @@ const answer = f => f.pi.appendMessage({ role: 'assistant', content: [{ type: 't
 async function build(f) { answer(f); await f.lifecycle.settle(f.id, f.pi); return f.builder.build(f.id, f.pi); }
 const syntheticToken = 'ghp_' + 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4';
 
+test('protected host attribution removes unmarked template text without changing source identity', async t => {
+  let observed;
+  const f = await fixture(t, { projectUserText: input => {
+    observed = structuredClone({ source: input.source, text: input.text });
+    input.source.entryId = 'mutated-host-copy';
+    return 'I prefer concise weekly summaries.';
+  } });
+  const entryId = user(f, 'Template example: I always prefer XML reports.\nUser request: I prefer concise weekly summaries.');
+  const result = await build(f);
+  assert.equal(result.status, 'ready');
+  const input = result.messages.find(message => message.source.entryId === entryId);
+  assert.equal(input.text, 'I prefer concise weekly summaries.');
+  assert.equal(observed.source.entryId, entryId);
+  assert.equal(input.source.contentVersion, observed.source.contentVersion);
+  assert(!JSON.stringify(result).includes('XML reports'));
+  assert.equal(f.pi.getEntry(entryId).id, entryId);
+});
+
+test('unavailable host attribution excludes an entry instead of trusting the template', async t => {
+  const f = await fixture(t, { projectUserText: () => undefined });
+  const id = user(f, 'Template example: I prefer XML.');
+  const result = await build(f);
+  assert.equal(result.status, 'ready');
+  assert(result.excludedEntries.includes(id));
+  assert(!result.messages.some(message => message.role === 'user'));
+});
+
+for (const projectUserText of [() => 'Invented fact', () => ({ text: 'wrong shape' }), () => { throw new Error('PRIVATE_HOST_ERROR'); }]) {
+  test('invalid host attribution fails without exposing source or diagnostics', async t => {
+    const f = await fixture(t, { projectUserText });
+    user(f, 'PRIVATE_TEMPLATE_TEXT');
+    assert.deepEqual(await build(f), { status: 'blocked', code: 'MEMORY_COLLECTION_SCAN_FAILED' });
+  });
+}
+
+test('host-attributed text still passes credential screening and concurrent permission checks', async t => {
+  const f = await fixture(t, { projectUserText: ({ text }) => text });
+  const id = user(f, 'My password is synthetic-private-value.');
+  assert((await build(f)).excludedEntries.includes(id));
+  const paused = await fixture(t, { projectUserText: async ({ text }) => { await paused.delivery.pause(); return text; } });
+  user(paused, 'I prefer metric units.');
+  assert.deepEqual(await build(paused), { status: 'blocked', code: 'MEMORY_COLLECTION_NOT_AUTHORIZED' });
+});
+
 test('expanded skill instructions are excluded while the separate user request retains its original source', async t => {
   const f = await fixture(t);
   const entryId = user(f, '<skill name="reports" location="/synthetic/SKILL.md">\nReferences are relative to /synthetic.\n\nI always prefer XML reports.\n</skill>\n\nI prefer concise weekly summaries.');
