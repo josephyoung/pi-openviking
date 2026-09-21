@@ -114,6 +114,34 @@ test('model switches recount the same request and cannot reuse another tokenizer
   assert.equal(f.result.requests, 2);
 });
 
+test('save receipts distinguish a queued acknowledgement from completed memory, including retries', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const timestamp = new Date(Date.now() + 1).toISOString();
+  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
+    message: { role: 'user', content: 'remember this fact' } }] } };
+  const save = () => f.tools.get('memory_save').execute('call-id', { content: 'fact' }, undefined, undefined, ctx);
+  const queued = await save();
+  const id = queued.details.operationId;
+  assert.equal(queued.details.status, 'queued');
+  assert.equal(queued.details.remembered, false);
+  assert.match(queued.details.message, /仅已提交/);
+  for (const phase of ['session_unknown', 'session_created', 'message_unknown', 'message_delivered', 'commit_unknown', 'processing', 'failed', 'blocked', 'blocked_by_pause', 'ready']) {
+    await f.stateStore.transact(state => { state.operations[id].phase = phase; });
+    const result = await save();
+    const visible = JSON.parse(result.content[0].text);
+    assert.deepEqual(visible, JSON.parse(JSON.stringify(result.details)));
+    assert.equal(visible.status, phase);
+    assert.equal(visible.remembered, phase === 'ready');
+    assert.match(visible.message, phase === 'ready' ? /已完成处理/ : /不得声称/);
+    assert.equal(visible.operationId, id);
+    for (const privateKey of ['payload', 'owner', 'source', 'remoteSessionId', 'taskId']) {
+      assert.equal(privateKey in visible, false);
+    }
+  }
+  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
+});
+
 test('a model change during token counting discards the old result', async t => {
   const f = await setup(t, { countTokens: async () => {
     f.context.model = { ...f.context.model, id: 'changed-during-count' };

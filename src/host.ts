@@ -89,7 +89,13 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,
-            status: result.phase, errorCode: result.errorCode };
+            status: result.phase, errorCode: result.errorCode,
+            remembered: result.phase === 'ready',
+            message: result.phase === 'ready'
+              ? '长期记忆已完成处理，可以告知用户已记住。'
+              : ['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
+                ? '长期记忆未保存成功。请根据状态和错误说明原因，不得声称已记住。'
+                : '仅已提交长期记忆保存请求，后台仍在处理，尚未确认已记住。请告知用户正在处理；不得声称已成功保存、已记录或保证下次会话能够召回。只有状态变为 ready 才表示已记住。' };
           return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
         } catch {
           const details = { status: 'blocked', errorCode: 'MEMORY_UNAVAILABLE' };
