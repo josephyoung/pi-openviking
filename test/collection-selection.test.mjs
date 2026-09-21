@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery } from '../dist/host.js';
 
@@ -294,4 +294,86 @@ test('a referenced proposition modified after request start is rejected before i
   const current = await forkTurn(f, fork, () => { proposal.message.content[0].text = 'MODIFIED_PROPOSITION'; });
   const selected = await f.selector(async () => assert.fail('Modified reference must not reach the model')).select([current], fork);
   assert.equal(selected.status, 'blocked'); assert.equal(selected.code, 'MEMORY_SOURCE_UNAVAILABLE');
+});
+
+async function explicitTurn(f, { content = 'The user prefers concise reports.', tamper, user = 'I prefer concise reports. I use metric units.' } = {}) {
+  const lifecycle = new CollectionLifecycle(f.store);
+  const id = await lifecycle.begin(f.session);
+  const userId = f.session.appendMessage({ role: 'user', content: user, timestamp: Date.now() });
+  const entry = f.session.getEntry(userId);
+  const hash = text => createHash('sha256').update(text).digest('hex');
+  const operation = await f.delivery.save({ sessionId: f.session.getSessionId(), entryId: `${entry.id}:${hash(content)}`,
+    branchId: entry.id, contentVersion: hash(JSON.stringify(entry)) }, content);
+  f.session.appendMessage({ role: 'assistant', stopReason: 'toolUse', timestamp: Date.now(),
+    content: [{ type: 'toolCall', id: 'save-call', name: 'memory_save', arguments: { content } }] });
+  f.session.appendMessage({ role: 'toolResult', toolCallId: 'save-call', toolName: 'memory_save', isError: false,
+    timestamp: Date.now(), content: [{ type: 'text', text: 'queued' }], details: { operationId: operation.id } });
+  f.session.appendMessage({ role: 'assistant', stopReason: 'stop', timestamp: Date.now(), content: [{ type: 'text', text: 'Submitted.' }] });
+  if (tamper) await f.store.transact(state => tamper(state.operations[operation.id]));
+  await lifecycle.settle(id, f.session);
+  return { id, operation };
+}
+
+test('verified explicit save is exclusion context; a different fact in the same message still submits', async t => {
+  const f = await fixture(t); const {id, operation} = await explicitTurn(f);
+  const selected = await f.selector(async ({data}) => {
+    const {messages} = JSON.parse(data);
+    assert.equal(messages.find(x => x.role === 'explicit_memory').text, 'The user prefers concise reports.');
+    assert(!data.includes(operation.id));
+    return json([{sourceId:'m0',quote:'I use metric units.'}]);
+  }).select([id],f.session);
+  assert.equal(selected.status,'ready');
+  assert.deepEqual(selected.explicitOperationIds,[operation.id]);
+  const result = await f.delivery.collectSelection(selected);
+  assert.equal(result.status,'recorded');
+  const operations=Object.values((await f.store.read()).operations);
+  assert.equal(operations.length,2);
+  assert.deepEqual(JSON.parse(operations.find(o=>o.kind==='automatic').payload).facts,['I use metric units.']);
+});
+
+test('a completed explicit-only fact yields no second outbox operation after empty selection', async t => {
+  const f=await fixture(t);const {id}=await explicitTurn(f);
+  const selected=await f.selector(async()=>json([])).select([id],f.session);
+  assert.equal((await f.delivery.collectSelection(selected)).status,'recorded');
+  assert.equal(Object.keys((await f.store.read()).operations).length,1);
+});
+
+for(const [name,tamper] of [
+  ['different source',o=>o.source.entryId='unrelated'],
+  ['different scope',o=>o.scope='other'],
+  ['failed save',o=>o.phase='failed'],
+  ['withdrawn save',o=>o.phase='blocked_by_pause'],
+  ['automatic receipt',o=>{o.kind='automatic';o.collectionRevision=1;}],
+  ['different version',o=>o.source.contentVersion='different'],
+]) test(`${name} cannot supply exclusion context`,async t=>{
+  const f=await fixture(t);const {id}=await explicitTurn(f,{tamper});
+  const selected=await f.selector(async({data})=>{
+    assert(!JSON.parse(data).messages.some(x=>x.role==='explicit_memory'));
+    return json([{sourceId:'m0',quote:'I prefer concise reports.'}]);
+  }).select([id],f.session);
+  assert.equal(selected.status,'ready');assert.equal(selected.facts.length,1);
+});
+
+test('explicit content undergoes secret screening and can never become a selected source',async t=>{
+  const f=await fixture(t);const {id}=await explicitTurn(f,{content:'password=SYNTHETIC_PRIVATE'});
+  await f.selector(async({data})=>{assert(!data.includes('SYNTHETIC_PRIVATE'));return json([]);}).select([id],f.session);
+  const g=await fixture(t);const turn=await explicitTurn(g);
+  const result=await g.selector(async({data})=>{
+    const m=JSON.parse(data).messages.find(x=>x.role==='explicit_memory');
+    return json([{sourceId:m.sourceId,quote:m.text}]);
+  }).select([turn.id],g.session);
+  assert.deepEqual(result,{status:'blocked',code:'MEMORY_SELECTION_INVALID'});
+});
+
+test('explicit failure during inference or before handoff cannot silently discard an automatic fact',async t=>{
+  const f=await fixture(t);const {id,operation}=await explicitTurn(f);
+  const result=await f.selector(async()=>{
+    await f.store.transact(s=>{s.operations[operation.id].phase='failed';});return json([]);
+  }).select([id],f.session);
+  assert.equal(result.status,'blocked');
+  const g=await fixture(t);const turn=await explicitTurn(g);
+  const selected=await g.selector(async()=>json([])).select([turn.id],g.session);
+  await g.store.transact(s=>{s.operations[turn.operation.id].phase='failed';});
+  assert.deepEqual(await g.delivery.collectSelection(selected),{status:'blocked',errorCode:'MEMORY_COLLECTION_EXPLICIT_CHANGED'});
+  assert.equal((await g.store.read()).collectionRequests[turn.id].phase,'settled');
 });

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { explicitSaveSource } from './explicit-save-source.js';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { CollectionSessionRegistry } from './collection-sessions.js';
@@ -128,15 +128,14 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           await options.assertToolIsolation();
           const branch = ctx.sessionManager.getBranch();
           const entry = [...branch].reverse().find(item => item.type === 'message' && item.message.role === 'user');
-          if (!entry) throw new Error('MEMORY_SOURCE_UNAVAILABLE');
+          if (!entry || entry.type !== 'message' || entry.message.role !== 'user') throw new Error('MEMORY_SOURCE_UNAVAILABLE');
           const authorization = (await options.stateStore.read()).authorization;
           if (!authorization.enabled || Date.parse(entry.timestamp) < Date.parse(authorization.effectiveAt)) {
             const details = { status: 'blocked', errorCode: authorization.enabled ? 'MEMORY_CONFIRM_AGAIN' : 'MEMORY_DISABLED' };
             return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
           }
-          const result = await delivery.save({ sessionId: ctx.sessionManager.getSessionId(),
-            entryId: `${entry.id}:${createHash('sha256').update(params.content).digest('hex')}`, branchId: entry.id,
-            contentVersion: createHash('sha256').update(JSON.stringify(entry)).digest('hex') }, params.content, options.scope ?? null, authorization.epoch);
+          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, params.content),
+            params.content, options.scope ?? null, authorization.epoch);
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,

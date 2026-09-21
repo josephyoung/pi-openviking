@@ -180,6 +180,10 @@ export class MemoryDelivery {
         || request.collectionRevision !== first.collectionRevision)) {
         return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_BATCH_CONFLICT' };
       }
+      if (selected.explicitOperationIds !== undefined && (!Array.isArray(selected.explicitOperationIds)
+        || selected.explicitOperationIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) {
+        throw new Error('INVALID_COLLECTION_SELECTION');
+      }
       const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
       const validSource = (source: CollectionSource) => isCollectionSource(source)
         && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
@@ -226,6 +230,12 @@ export class MemoryDelivery {
         : request!.selectionLease?.id !== leaseId || request!.selectionLease.expiresAt <= Date.now())) {
         return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_CLAIM_EXPIRED' };
       }
+      if (selected.explicitOperationIds?.some(id => {
+        const operation = state.operations[id];
+        return !operation || operation.kind !== 'explicit' || operation.scope !== first.scope
+          || operation.authorizationEpoch !== first.authorizationEpoch
+          || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase);
+      })) return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_EXPLICIT_CHANGED' };
       const authorization = state.authorization;
       if (!authorization.enabled || !authorization.automaticCollection
         || authorization.epoch !== first.authorizationEpoch

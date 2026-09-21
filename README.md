@@ -373,6 +373,24 @@ business responses. The private credential JSON supplies the corresponding model
 key; it is never printed. This makes real model calls and fails on a semantic
 mismatch. It does not claim real OA, OpenViking delivery or browser coverage.
 
+Explicit and automatic saves may overlap in a completed turn. The selector gets
+exclusion-only context from `memory_save` calls only when the protected owner
+state confirms the matching user source, content digest, scope and authorization
+epoch. It must omit equivalent facts (including paraphrases), while retaining
+other eligible facts in the same user message. Receipt context is locally
+secret-screened and cannot itself become a selected source. Failed, blocked or
+unverifiable saves do not suppress automatic candidates. If an explicit save
+fails during selection or before handoff, the batch stays unprocessed for the
+normal bounded retry rather than silently losing candidates.
+
+This semantic overlap check uses the configured selector model; the host verifies
+provenance, not semantic equivalence. The opt-in real-model probe covers repeated
+paraphrases, partial overlap and failed/forged receipts:
+
+```sh
+node scripts/check-explicit-collection-semantics.mjs "$PWD" /secure/models.json /secure/model-credentials.json
+```
+
 Restoring the main switch preserves the existing collection grant's rule version.
 It does not authorize a new task-fact policy. Hosts can pass their current
 `collection.policyVersion` to the extension: standard pi reports changed rules
