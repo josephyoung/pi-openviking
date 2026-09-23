@@ -87,7 +87,7 @@ export class MemoryGovernanceService {
           if (job.phase === 'complete') continue;
           job.phase = 'complete'; job.completedAt = new Date().toISOString();
           job.cancelledByRetirement = true;
-          delete job.selectivePlan; delete job.mergedResolutions; delete job.errorCode;
+          delete job.selectivePlan; delete job.mergedResolutions; delete job.preservedDocuments; delete job.errorCode;
         }
       });
       return { jobId: retirement.id, status: 'complete' };

@@ -163,14 +163,17 @@ export class OwnerMemoryClient implements DeliveryTransport {
     if (!Array.isArray(operations.adds) || !Array.isArray(operations.updates)) throw new Error('INVALID_MEMORY_RESPONSE');
     const changes = [...operations.adds, ...operations.updates].map(object);
     if (!changes.length) return { status: 'failed', code: 'MEMORY_NO_EXTRACTED_FACT' };
-    const recalled = await this.recall(operation.payload ?? '', changes.length);
     const memoryUris: string[] = [];
     for (const change of changes) {
       const uri = this.#memoryUri(change.uri);
       const content = await this.#sdk.read(uri);
       const expected = change.after ?? change.content;
       if (typeof expected !== 'string' || !expected.trim() || content.trim() !== expected.trim()) continue;
-      if (recalled.some(memory => memory.uri === uri)) memoryUris.push(uri);
+      // The original prompt can rank an older related document first. Verify
+      // that each changed document is searchable inside its own trusted URI;
+      // a top-N miss on the whole owner tree is not an unfinished extraction.
+      const result = await this.#sdk.find(expected, { targetUri: uri, limit: 1, level: [2] });
+      if (result.memories?.some(memory => object(memory).uri === uri)) memoryUris.push(uri);
     }
     return memoryUris.length ? { status: 'ready', archiveId, memoryUris } : { status: 'processing' };
   }

@@ -1,4 +1,4 @@
-import { governancePending, governanceHoldsDelivery, governanceCollectionJob, sourceReplayRevoked, sourceRevoked, blockRevokedOperations } from './governance.js';
+import { governancePending, governanceHoldsDelivery, governanceCollectionJob, sourceReplayRevoked, sourceRevoked, operationRevoked, blockRevokedOperations } from './governance.js';
 import { isTaskFactProjection } from './task-facts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
@@ -356,6 +356,33 @@ export class MemoryDelivery {
 
   /** Advances at most one remote mutation. The caller owns scheduling/lifetime. */
   async advance(id: string): Promise<void> { return this.#advance(id); }
+
+  /** A bounded retry limit stops mutations, but a later release can safely
+   * reconcile an already accepted commit through its read-only task receipt. */
+  async reconcileExhaustedProcessing(id: string): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('INVALID_MEMORY_OPERATION');
+    const state = await this.#store.read();
+    const operation = state.operations[id];
+    if (!operation || operation.phase !== 'blocked' || operation.errorCode !== 'MEMORY_RECONCILIATION_LIMIT'
+      || operation.reconciliationPhase !== 'processing' || !operation.taskId || state.retirement
+      || governancePending(state, operation.scope) || operationRevoked(state, operation)) return;
+    let result: Awaited<ReturnType<DeliveryTransport['inspect']>>;
+    try { result = await this.#transport.inspect(operation); }
+    catch { return; }
+    if (result.status === 'processing' || result.status === 'ready' && !result.memoryUris.length) return;
+    await this.#store.transact(current => {
+      const live = current.operations[id];
+      if (!live || live.phase !== 'blocked' || live.errorCode !== 'MEMORY_RECONCILIATION_LIMIT'
+        || live.reconciliationPhase !== 'processing' || live.taskId !== operation.taskId
+        || current.retirement || governancePending(current, live.scope) || operationRevoked(current, live)) return;
+      if (result.status === 'ready') {
+        live.phase = 'ready'; live.archiveId = result.archiveId; live.memoryUris = result.memoryUris;
+        delete live.errorCode;
+      } else { live.phase = 'failed'; live.errorCode = result.code; }
+      delete live.reconciliationPhase;
+      live.updatedAt = new Date().toISOString();
+    });
+  }
 
   /** Only a trusted coordinator can drain a pre-barrier writer while recall stays suppressed. */
   async advanceGovernance(id: string, jobId: string): Promise<void> {

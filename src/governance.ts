@@ -90,7 +90,7 @@ export class MemoryGovernanceBarrier {
         if (!input.supersedePending) throw new Error('MEMORY_GOVERNANCE_PENDING');
         if (pending.kind === 'clear') return structuredClone(pending);
         pending.phase = 'complete'; pending.completedAt = new Date().toISOString();
-        delete pending.selectivePlan; delete pending.mergedResolutions; delete pending.errorCode;
+        delete pending.selectivePlan; delete pending.mergedResolutions; delete pending.preservedDocuments; delete pending.errorCode;
       }
       const scoped = Object.values(state.operations).filter(operation => operation.scope === input.scope);
       const matchingUri = input.kind === 'clear' ? [] : scoped.filter(operation => operation.memoryUris?.includes(input.memoryUri!));

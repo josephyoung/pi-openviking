@@ -49,12 +49,22 @@ supervisor; hosts must still provide their own worker tool policy.
   they do not authorize repeating a non-idempotent call.
 - Owner-level background scheduling with durable backoff, startup recovery,
   bounded processing and shutdown. Exhausted reconciliation stays visibly blocked;
-  it never turns an unknown remote outcome into an automatic resend.
+  on restart, an exhausted accepted commit gets one read-only task check. It
+  never turns an unknown remote outcome into an automatic resend.
 - Protected resource-loader configuration rejects workspace packages/extensions
   while preserving explicitly supplied trusted Skills. Apply before package
   resolution; `noExtensions` alone is insufficient.
 - `ready` requires a completed matching task, an archive containing the source,
-  a matching memory diff, current content and a successful retrieval probe.
+  a matching memory diff, current content and a successful retrieval probe
+  scoped to each changed, owner-validated document URI. An older related
+  document ranking first for the original prompt cannot hold a completed task
+  in processing indefinitely.
+- Selective correction or forgetting stages a bounded durable copy of
+  independently classified unrelated documents before deleting a shared
+  source. A lost deletion reply can resume after restart without losing those
+  documents or reinstating the selected text. Exclusive retained documents
+  move to opaque owner-scoped URIs so a generated path cannot reveal the old
+  fact; export marks their original source as preserved after correction.
 - Pause suppresses unsent operations and removes their pending bodies. Enabling
   again does not replay those operations or authorize automatic collection.
 

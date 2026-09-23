@@ -5,7 +5,7 @@ import { sameOwner, type DeliveryPhase, type StateStore } from './types.js';
 const terminal = new Set<DeliveryPhase>(['ready', 'failed', 'blocked', 'blocked_by_pause']);
 export interface DeliverySchedulerOptions {
   store: StateStore;
-  delivery: Pick<MemoryDelivery, 'advance' | 'owner'>;
+  delivery: Pick<MemoryDelivery, 'advance' | 'owner'> & Partial<Pick<MemoryDelivery, 'reconcileExhaustedProcessing'>>;
   pollIntervalMs: number;
   initialBackoffMs: number;
   maxBackoffMs: number;
@@ -22,6 +22,7 @@ export class DeliveryScheduler {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running: Promise<void> | undefined;
   #wakeRequested = false;
+  readonly #reconciledExhausted = new Set<string>();
 
   constructor(options: DeliverySchedulerOptions) {
     if (![options.pollIntervalMs, options.initialBackoffMs, options.maxBackoffMs,
@@ -64,6 +65,15 @@ export class DeliveryScheduler {
   async #tick(): Promise<void> {
     const { store, delivery, maxOperationsPerTick, maxAttemptsPerPhase, initialBackoffMs, maxBackoffMs } = this.#options;
     const snapshot = await store.read();
+    if (delivery.reconcileExhaustedProcessing) {
+      for (const operation of Object.values(snapshot.operations).filter(operation => operation.phase === 'blocked'
+        && operation.errorCode === 'MEMORY_RECONCILIATION_LIMIT' && operation.reconciliationPhase === 'processing'
+        && operation.taskId && !this.#reconciledExhausted.has(operation.id)).slice(0, maxOperationsPerTick)) {
+        if (!this.#active) break;
+        this.#reconciledExhausted.add(operation.id);
+        await delivery.reconcileExhaustedProcessing(operation.id);
+      }
+    }
     const candidates = Object.values(snapshot.operations).filter(operation => !terminal.has(operation.phase) && !governanceHoldsDelivery(snapshot, operation) && (operation.nextAttemptAt ?? 0) <= Date.now())
       .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0) || a.createdAt.localeCompare(b.createdAt));
     let processed = 0;
