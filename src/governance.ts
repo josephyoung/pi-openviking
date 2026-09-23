@@ -2,6 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionRequest, GovernanceJob, Operation, OwnerState, StateStore } from './types.js';
 
 const unsent = new Set(['queued', 'session_created', 'message_delivered']);
+export function governanceCandidateText(payload: string): string {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (parsed && typeof parsed === 'object' && 'facts' in parsed && Array.isArray(parsed.facts)
+      && parsed.facts.length === 1 && typeof parsed.facts[0] === 'string') return parsed.facts[0];
+  } catch { /* Explicit save body is plain text. */ }
+  return payload;
+}
 export function governancePending(state: OwnerState, scope: string | null): boolean {
   return Object.values(state.governance?.jobs ?? {}).some(job => job.scope === scope && job.phase !== 'complete');
 }
@@ -126,6 +134,37 @@ export class MemoryGovernanceBarrier {
       state.governance.jobs[job.id] = job;
       blockRevokedOperations(state);
       return structuredClone(job);
+    });
+  }
+
+  /** Resolve a pre-barrier fact while the target text is still available to the job. */
+  async classifyWriter(jobId: string, operationId: string, decision: 'target' | 'unrelated'): Promise<void> {
+    if (!['target', 'unrelated'].includes(decision)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+    await this.store.transact(state => {
+      const job = state.governance?.jobs[jobId];
+      const operation = state.operations[operationId];
+      if (!job || job.kind === 'clear' || job.phase !== 'draining' || !job.selectivePlan
+        || !job.writerOperationIds.includes(operationId) || !operation || operation.scope !== job.scope
+        || job.operationIds.includes(operationId) && decision !== 'target') {
+        throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+      }
+      const prior = job.writerClassifications?.[operationId];
+      if (prior && prior !== decision) throw new Error('MEMORY_GOVERNANCE_CONFLICT');
+      job.writerClassifications ??= {};
+      job.writerClassifications[operationId] = decision;
+      delete job.errorCode;
+      if (decision === 'target' && !job.operationIds.includes(operationId)) {
+        job.operationIds.push(operationId);
+        job.replaySourceKeys ??= [];
+        for (const entryId of [operation.source.entryId, ...(operation.collectionSources ?? []).map(source => source.entryId),
+          ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]) {
+          const fact = sourceKey(state, job.scope, entryId, operation.factDigest);
+          const replay = sourceKey(state, job.scope, entryId);
+          if (!job.sourceKeys.includes(fact)) job.sourceKeys.push(fact);
+          if (!job.replaySourceKeys.includes(replay)) job.replaySourceKeys.push(replay);
+        }
+        blockRevokedOperations(state);
+      }
     });
   }
 }

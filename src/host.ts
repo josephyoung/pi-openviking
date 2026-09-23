@@ -27,7 +27,7 @@ export { MemoryClearCoordinator } from './governance-coordinator.js';
 export { MemoryExportService } from './memory-export.js';
 export type { MemoryExportTransport, ExportedMemory } from './memory-export.js';
 export { MemorySelectiveService } from './memory-selective.js';
-export type { SelectiveTransport } from './memory-selective.js';
+export type { SelectiveTransport, WriterClassifier } from './memory-selective.js';
 export { MemoryGovernanceService, MemoryGovernanceScheduler } from './memory-governance-service.js';
 export type { MemoryGovernanceClient, GovernanceReceipt } from './memory-governance-service.js';
 export type { GovernanceTransport, GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';

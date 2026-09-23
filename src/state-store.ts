@@ -61,6 +61,11 @@ function verify(state: OwnerState, owner: Owner): void {
         || !Array.isArray(job.writerOperationIds) || new Set(job.writerOperationIds).size !== job.writerOperationIds.length
         || job.writerOperationIds.some(operationId => typeof operationId !== 'string'
           || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
+        || (job.writerClassifications !== undefined && (job.kind === 'clear'
+          || !job.writerClassifications || typeof job.writerClassifications !== 'object'
+          || Array.isArray(job.writerClassifications)
+          || Object.entries(job.writerClassifications).some(([operationId, decision]) =>
+            !job.writerOperationIds.includes(operationId) || !['target', 'unrelated'].includes(decision))))
         || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
         || (job.collectionRequestIds !== undefined && (!Array.isArray(job.collectionRequestIds)
           || job.kind === 'clear' || new Set(job.collectionRequestIds).size !== job.collectionRequestIds.length

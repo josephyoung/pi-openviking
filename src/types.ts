@@ -117,6 +117,8 @@ export interface GovernanceJob {
   sourceKeys: string[];
   /** Entry-level replay fence activated only after pre-barrier collection drains. */
   replaySourceKeys?: string[];
+  /** Auditable decisions for pre-barrier facts whose text may paraphrase the target. */
+  writerClassifications?: Record<string, 'target' | 'unrelated'>;
   /** Transient exact-text plan. Removed after verified selective cleanup. */
   selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
   errorCode?: string;

@@ -262,6 +262,16 @@ clear in their own management UI. `exportPage` returns only bound-scope content
 and source metadata; it validates cursors and has per-document/page byte
 budgets. The model export tool uses a smaller budget than the host API.
 
+For selective edits, the host can pass a trusted `WriterClassifier` as the
+fourth `MemoryGovernanceService` constructor argument. It compares the selected
+old fact with each queued fact and returns `target`, `unrelated` or `uncertain`.
+Without a decision, the job stays pending with
+`MEMORY_GOVERNANCE_REVIEW_REQUIRED`. Authenticated management can inspect
+`reviewCandidates(jobId)` and submit `reviewWriter(jobId, operationId,
+decision)`. A queued target is revoked before sending; an accepted target's
+exclusive derivative is removed. A shared derivative stays pending for review.
+Candidate plaintext is erased from the local outbox after completion.
+
 Exact-text cleanup and real-service fixtures do not prove semantic paraphrase
 erasure, account retirement, or Dano browser acceptance. Those are #476 release
 gates, so this branch must not be treated as the completed feature.

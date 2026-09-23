@@ -1,4 +1,4 @@
-import { MemoryGovernanceBarrier, sourceRevoked } from './governance.js';
+import { MemoryGovernanceBarrier, governanceCandidateText, sourceRevoked } from './governance.js';
 import { sameOwner, checkedOwner, type GovernanceJob, type Owner, type Operation } from './types.js';
 import type { GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
 import { checkedScope, checkedMemoryDocumentUri } from './memory-reference.js';
@@ -14,6 +14,9 @@ export interface SelectiveTransport {
   removeMemory(uri: string): Promise<void>;
 }
 
+export type WriterClassifier = (input: { selectedText: string; candidateText: string;
+  scope: string | null }) => Promise<'target' | 'unrelated' | 'uncertain'>;
+
 function occurrences(text: string, selected: string): number {
   return text.split(selected).length - 1;
 }
@@ -21,7 +24,8 @@ function occurrences(text: string, selected: string): number {
 /** Exact-text governance for an unambiguously selected document. */
 export class MemorySelectiveService {
   constructor(private readonly store: GovernanceStateStore, private readonly transport: SelectiveTransport,
-    private readonly drainWriter?: (operationId: string, jobId: string) => Promise<void>) {
+    private readonly drainWriter?: (operationId: string, jobId: string) => Promise<void>,
+    private readonly classifyWriter?: WriterClassifier) {
     checkedOwner(store.owner);
     if (!sameOwner(store.owner, transport.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
     checkedScope(transport.scope);
@@ -95,6 +99,27 @@ export class MemorySelectiveService {
           for (const operationId of job.writerOperationIds) {
             signal?.throwIfAborted();
             state = await this.store.read(signal);
+            job = state.governance!.jobs[id];
+            const operation = state.operations[operationId];
+            if (job.operationIds.includes(operationId) || job.writerClassifications?.[operationId]
+              || !operation?.payload || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)) continue;
+            const candidateText = governanceCandidateText(operation.payload);
+            const decision = await this.classifyWriter?.({ selectedText: job.selectivePlan!.selectedText,
+              candidateText, scope: job.scope }) ?? 'uncertain';
+            if (decision !== 'target' && decision !== 'unrelated') {
+              await this.store.transact(current => {
+                const live = current.governance?.jobs[id];
+                if (live?.phase === 'draining') live.errorCode = 'MEMORY_GOVERNANCE_REVIEW_REQUIRED';
+              }, signal);
+              return { status: 'pending', errorCode: 'MEMORY_GOVERNANCE_REVIEW_REQUIRED' };
+            }
+            await new MemoryGovernanceBarrier(this.store).classifyWriter(id, operationId, decision);
+          }
+          state = await this.store.read(signal);
+          job = state.governance!.jobs[id];
+          for (const operationId of job.writerOperationIds) {
+            signal?.throwIfAborted();
+            state = await this.store.read(signal);
             const operation = state.operations[operationId];
             if (!operation || !sameOwner(operation.owner, this.transport.owner) || operation.scope !== job.scope) {
               throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
@@ -121,6 +146,22 @@ export class MemorySelectiveService {
         for (const operationId of job.operationIds) {
           signal?.throwIfAborted();
           await this.transport.removeSource(state.operations[operationId]);
+        }
+        // A classified old paraphrase may have produced a different document.
+        // Delete that exclusive derivative; a shared derivative needs review.
+        const documents = new Set(await this.#documents());
+        const targetIds = job.operationIds;
+        const scope = job.scope;
+        for (const uri of new Set(targetIds.flatMap(operationId => state.operations[operationId].memoryUris ?? []))) {
+          if (uri === plan.memoryUri || !documents.has(uri)) continue;
+          const content = await this.transport.readMemory(uri);
+          if (content.includes(plan.selectedText)) continue;
+          if (Object.values(state.operations).some(operation => !targetIds.includes(operation.id)
+            && operation.scope === scope && operation.phase === 'ready' && operation.memoryUris?.includes(uri))) {
+            throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+          }
+          await this.transport.removeMemory(uri);
+          documents.delete(uri);
         }
         let targetConfirmed = job.kind === 'forget';
         for (const uri of await this.#documents()) {
@@ -152,16 +193,19 @@ export class MemorySelectiveService {
             delete operation.payload;
             operation.updatedAt = new Date().toISOString();
           }
+          for (const operationId of live.writerOperationIds) delete current.operations[operationId].payload;
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
           delete live.selectivePlan; delete live.errorCode;
         }, signal);
         return { status: 'complete' };
-      } catch {
+      } catch (error) {
+        const code = error instanceof Error && error.message === 'MEMORY_GOVERNANCE_REVIEW_REQUIRED'
+          ? error.message : 'MEMORY_GOVERNANCE_RETRY_REQUIRED';
         await this.store.transact(current => {
           const live = current.governance?.jobs[id];
-          if (live && live.phase !== 'complete') live.errorCode = 'MEMORY_GOVERNANCE_RETRY_REQUIRED';
+          if (live && live.phase !== 'complete') live.errorCode = code;
         });
-        return { status: 'pending', errorCode: 'MEMORY_GOVERNANCE_RETRY_REQUIRED' };
+        return { status: 'pending', errorCode: code };
       }
     }, signal);
   }

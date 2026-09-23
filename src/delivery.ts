@@ -447,7 +447,10 @@ export class MemoryDelivery {
       if (!patch.errorCode) delete current.errorCode;
       current.deliveryAttempts = 0;
       current.nextAttemptAt = 0;
-      if (terminal.has(current.phase)) delete current.payload;
+      const pendingSelective = Object.values(state.governance?.jobs ?? {}).some(job =>
+        job.kind !== 'clear' && job.phase === 'draining' && job.scope === current.scope
+        && job.writerOperationIds.includes(id));
+      if (terminal.has(current.phase) && !pendingSelective) delete current.payload;
       // A response may arrive after consent changed. Never leave a newly
       // reconciled send phase eligible to carry its old payload forward.
       blockUnsent(state);

@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService, CollectionLifecycle } from '../dist/host.js';
+import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService,
+  MemoryGovernanceBarrier, CollectionLifecycle } from '../dist/host.js';
 
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-selective-'));
@@ -48,7 +49,8 @@ async function setup(t) {
     });
   };
   return { owner, directory, store, delivery, docs, old, unrelated, uri, extra, target, other, removedSources,
-    transport, selective: new MemorySelectiveService(store, transport, drainWriter), drainWriter,
+    transport, selective: new MemorySelectiveService(store, transport, drainWriter,
+      async ({ candidateText }) => candidateText.includes('Meeting day') ? 'unrelated' : 'uncertain'), drainWriter,
     setSettled(value) { settled = value; }, setFailAfterReplace() { failAfterReplace = true; } };
 }
 
@@ -166,6 +168,56 @@ test('selective governance drains an unrelated pre-barrier collection and filter
   assert.equal((await f.selective.advance(job.id)).status, 'complete');
   assert.equal((await f.store.read()).operations[receipt.operationIds[0]].phase, 'ready');
   assert.equal(f.docs.get(f.uri), `\n${f.unrelated}`);
+});
+
+test('an unclassified queued writer keeps governance pending until its source is resolved', async t => {
+  const f = await setup(t);
+  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter);
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(await selective.advance(job.id), {
+    status: 'pending', errorCode: 'MEMORY_GOVERNANCE_REVIEW_REQUIRED',
+  });
+  assert.equal((await f.store.read()).operations[f.other.id].phase, 'queued');
+  await new MemoryGovernanceBarrier(f.store).classifyWriter(job.id, f.other.id, 'unrelated');
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  assert.equal((await f.store.read()).operations[f.other.id].phase, 'ready');
+});
+
+test('a queued semantic paraphrase is revoked before remote delivery', async t => {
+  const f = await setup(t);
+  const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'paraphrase',
+    branchId: 'paraphrase', contentVersion: 'v1' }, 'I enjoy jasmine tea');
+  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter,
+    async ({ candidateText }) => candidateText.includes('jasmine') ? 'target' : 'unrelated');
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  const state = await f.store.read();
+  assert.equal(state.operations[paraphrase.id].phase, 'blocked');
+  assert.equal(state.operations[paraphrase.id].payload, undefined);
+  assert.equal(state.operations[f.other.id].phase, 'ready');
+  assert(!f.docs.get(f.uri).includes('jasmine'));
+});
+
+test('an accepted paraphrase in a separate exclusive document is removed before success', async t => {
+  const f = await setup(t);
+  const source = { sessionId: 'chat', entryId: 'accepted-paraphrase',
+    branchId: 'accepted-paraphrase', contentVersion: 'v1' };
+  const paraphrase = await f.delivery.save(source, 'I enjoy jasmine tea');
+  await f.store.transact(state => { state.operations[paraphrase.id].phase = 'processing'; });
+  const drain = async operationId => {
+    if (operationId === paraphrase.id) {
+      f.docs.set(f.extra, 'User prefers jasmine tea');
+      await f.store.transact(state => {
+        state.operations[operationId].phase = 'ready'; state.operations[operationId].memoryUris = [f.extra];
+      });
+    } else await f.drainWriter(operationId);
+  };
+  const selective = new MemorySelectiveService(f.store, f.transport, drain,
+    async ({ candidateText }) => candidateText.includes('jasmine') ? 'target' : 'unrelated');
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  assert.equal(f.docs.has(f.extra), false);
+  assert.equal((await f.store.read()).operations[paraphrase.id].phase, 'blocked');
 });
 
 test('forgetting one of two facts from the same source keeps the other source current', async t => {

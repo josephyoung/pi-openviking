@@ -1,7 +1,7 @@
-import { MemoryGovernanceBarrier } from './governance.js';
+import { MemoryGovernanceBarrier, governanceCandidateText } from './governance.js';
 import { MemoryClearCoordinator, type GovernanceProgress, type GovernanceStateStore,
   type GovernanceTransport } from './governance-coordinator.js';
-import { MemorySelectiveService, type SelectiveTransport } from './memory-selective.js';
+import { MemorySelectiveService, type SelectiveTransport, type WriterClassifier } from './memory-selective.js';
 import { MemoryExportService, type MemoryExportTransport } from './memory-export.js';
 import { checkedOwner, sameOwner, type GovernanceJob } from './types.js';
 import type { MemoryDelivery } from './delivery.js';
@@ -15,12 +15,12 @@ export class MemoryGovernanceService {
   readonly #clear: MemoryClearCoordinator;
   readonly #export: MemoryExportService;
   constructor(private readonly store: GovernanceStateStore, private readonly client: MemoryGovernanceClient,
-    delivery: Pick<MemoryDelivery, 'advanceGovernance' | 'owner'>) {
+    delivery: Pick<MemoryDelivery, 'advanceGovernance' | 'owner'>, classifyWriter?: WriterClassifier) {
     checkedOwner(store.owner);
     if (!sameOwner(store.owner, client.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
     if (!delivery || !sameOwner(store.owner, delivery.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
     this.#selective = new MemorySelectiveService(store, client,
-      (operationId, jobId) => delivery.advanceGovernance(operationId, jobId));
+      (operationId, jobId) => delivery.advanceGovernance(operationId, jobId), classifyWriter);
     this.#clear = new MemoryClearCoordinator(store, client);
     this.#export = new MemoryExportService(store, client);
   }
@@ -45,6 +45,30 @@ export class MemoryGovernanceService {
     if (!job || job.scope !== this.client.scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
     return { jobId: id, status: job.phase === 'complete' ? 'complete' : 'pending',
       ...(job.errorCode ? { errorCode: job.errorCode } : {}) };
+  }
+
+  /** Authenticated management clarification; owner and project come from this service. */
+  async reviewWriter(jobId: string, operationId: string, decision: 'target' | 'unrelated'): Promise<GovernanceReceipt> {
+    const job = (await this.store.read()).governance?.jobs[jobId];
+    if (!job || job.scope !== this.client.scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+    await new MemoryGovernanceBarrier(this.store).classifyWriter(jobId, operationId, decision);
+    const result = await this.#selective.advance(jobId);
+    return this.#receipt(job, result);
+  }
+
+  async reviewCandidates(jobId: string): Promise<Array<{ operationId: string; phase: string; candidateText: string }>> {
+    const state = await this.store.read();
+    const job = state.governance?.jobs[jobId];
+    if (!job || job.scope !== this.client.scope || job.kind === 'clear' || job.phase !== 'draining') {
+      throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+    }
+    return job.writerOperationIds.flatMap(operationId => {
+      const operation = state.operations[operationId];
+      if (job.operationIds.includes(operationId) || job.writerClassifications?.[operationId]
+        || !operation?.payload || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)) return [];
+      return [{ operationId, phase: operation.phase,
+        candidateText: governanceCandidateText(operation.payload) }];
+    });
   }
 
   /** Idempotent recovery after restart or an unknown remote reply. */
