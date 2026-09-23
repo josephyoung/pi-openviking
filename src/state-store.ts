@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { flock } from 'fs-ext';
 import { checkedOwner, sameOwner, isCollectionSource, type Owner, type OwnerState, type StateStore } from './types.js';
+import { isMemoryDocumentUri } from './memory-reference.js';
 
 async function lock(fd: number, operation: 'ex' | 'un', signal?: AbortSignal): Promise<void> {
   // Blocking flock consumes a libuv worker: enough waiting writers can starve
@@ -31,6 +32,83 @@ function verify(state: OwnerState, owner: Owner): void {
       || !Number.isSafeInteger(state.authorization.epoch)
       || !state.operations || Array.isArray(state.operations)) {
     throw new Error('INVALID_MEMORY_STATE');
+  }
+  if (state.retirement !== undefined && (!state.retirement
+    || !/^[a-f0-9-]{36}$/.test(state.retirement.id)
+    || !['requested', 'remote_cleared'].includes(state.retirement.phase)
+    || !Number.isFinite(Date.parse(state.retirement.requestedAt))
+    || state.authorization.enabled || state.authorization.automaticCollection)) {
+    throw new Error('INVALID_MEMORY_RETIREMENT');
+  }
+  if (state.governance !== undefined) {
+    const governance = state.governance;
+    if (!governance || !Number.isSafeInteger(governance.revision) || governance.revision < 1
+      || !governance.jobs || typeof governance.jobs !== 'object' || Array.isArray(governance.jobs)) {
+      throw new Error('INVALID_MEMORY_GOVERNANCE');
+    }
+    const revisions = new Set<number>();
+    const pendingScopes = new Set<string | null>();
+    for (const [id, job] of Object.entries(governance.jobs)) {
+      if (!job || job.id !== id || !/^[a-f0-9-]{36}$/.test(id)
+        || !Number.isSafeInteger(job.revision) || job.revision < 1 || job.revision > governance.revision
+        || revisions.has(job.revision) || !['forget', 'correct', 'clear'].includes(job.kind)
+        || !['draining', 'applying', 'complete'].includes(job.phase)
+        || (job.scope !== null && (typeof job.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(job.scope)))
+        || (job.errorCode !== undefined && (typeof job.errorCode !== 'string' || !/^MEMORY_[A-Z_]+$/.test(job.errorCode)))
+        || (job.completedAt !== undefined && (job.phase !== 'complete' || !Number.isFinite(Date.parse(job.completedAt))))
+        || (job.supersededBy !== undefined && (job.kind === 'clear' || job.phase !== 'complete'
+          || state.governance?.jobs[job.supersededBy]?.kind !== 'clear'
+          || state.governance.jobs[job.supersededBy].scope !== job.scope
+          || state.governance.jobs[job.supersededBy].revision <= job.revision))
+        || (job.cancelledByRetirement !== undefined && (job.cancelledByRetirement !== true
+          || job.phase !== 'complete' || state.retirement?.phase !== 'remote_cleared'))
+        || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))
+        || !Array.isArray(job.sourceKeys) || new Set(job.sourceKeys).size !== job.sourceKeys.length
+        || job.sourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
+        || (job.replaySourceKeys !== undefined && (job.kind === 'clear'
+          || !Array.isArray(job.replaySourceKeys) || new Set(job.replaySourceKeys).size !== job.replaySourceKeys.length
+          || job.replaySourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))))
+        || !Array.isArray(job.operationIds) || new Set(job.operationIds).size !== job.operationIds.length
+        || job.operationIds.some(operationId => typeof operationId !== 'string'
+          || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
+        || !Array.isArray(job.writerOperationIds) || new Set(job.writerOperationIds).size !== job.writerOperationIds.length
+        || job.writerOperationIds.some(operationId => typeof operationId !== 'string'
+          || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
+        || (job.writerClassifications !== undefined && (job.kind === 'clear'
+          || !job.writerClassifications || typeof job.writerClassifications !== 'object'
+          || Array.isArray(job.writerClassifications)
+          || Object.entries(job.writerClassifications).some(([operationId, decision]) =>
+            !job.writerOperationIds.includes(operationId) || !['target', 'unrelated'].includes(decision))))
+        || (job.mergedResolutions !== undefined && (job.kind === 'clear' || job.phase === 'complete'
+          || !job.mergedResolutions || typeof job.mergedResolutions !== 'object'
+          || Array.isArray(job.mergedResolutions)
+          || Object.entries(job.mergedResolutions).some(([operationId, text]) =>
+            job.writerClassifications?.[operationId] !== 'target'
+            || !state.operations[operationId]?.memoryUris?.includes(job.memoryUris[0])
+            || typeof text !== 'string' || !text.trim() || text.length > 16384)))
+        || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
+        || (job.collectionRequestIds !== undefined && (!Array.isArray(job.collectionRequestIds)
+          || job.kind === 'clear' || new Set(job.collectionRequestIds).size !== job.collectionRequestIds.length
+          || job.collectionRequestIds.some(requestId => typeof requestId !== 'string'
+            || !state.collectionRequests?.[requestId] || state.collectionRequests[requestId].scope !== job.scope)))
+        || !Array.isArray(job.memoryUris) || new Set(job.memoryUris).size !== job.memoryUris.length
+        || (job.kind !== 'clear' && job.memoryUris.length !== 1)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+      if (job.memoryUris.some(uri => !isMemoryDocumentUri(owner, job.scope, uri))) {
+        throw new Error('INVALID_MEMORY_GOVERNANCE');
+      }
+      const plan = job.selectivePlan;
+      if (plan !== undefined && (job.kind === 'clear' || job.phase === 'complete'
+        || plan.memoryUri !== job.memoryUris[0]
+        || typeof plan.selectedText !== 'string' || !plan.selectedText.trim() || plan.selectedText.length > 16384
+        || typeof plan.replacementText !== 'string' || plan.replacementText.length > 16384
+        || (job.kind === 'correct' && (!plan.replacementText.trim() || plan.replacementText.includes(plan.selectedText)))
+        || (job.kind === 'forget' && plan.replacementText !== ''))) throw new Error('INVALID_MEMORY_GOVERNANCE');
+      revisions.add(job.revision);
+      if (job.phase !== 'complete') {
+        if (pendingScopes.has(job.scope)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+        pendingScopes.add(job.scope);
+      }
+    }
   }
   const consent = state.authorization.collectionConsent;
   if ((state.authorization.automaticCollection && !consent) || (consent !== undefined && (!consent
@@ -113,6 +191,13 @@ function verify(state: OwnerState, owner: Owner): void {
     if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
       throw new Error('MEMORY_OWNER_MISMATCH');
     }
+    if (operation.reconciliationPhase !== undefined && !['queued', 'session_unknown', 'session_created',
+      'message_unknown', 'message_delivered', 'commit_unknown', 'processing'].includes(operation.reconciliationPhase)) {
+      throw new Error('INVALID_MEMORY_RECONCILIATION_PHASE');
+    }
+    if (operation.factDigest !== undefined && !/^[a-f0-9]{64}$/.test(operation.factDigest)) {
+      throw new Error('INVALID_MEMORY_OPERATION');
+    }
     if (operation.collectionSources !== undefined && (operation.kind !== 'automatic'
       || !Array.isArray(operation.collectionSources) || !operation.collectionSources.length
       || operation.collectionSources.some(source => !isCollectionSource(source)))) {
@@ -193,11 +278,11 @@ export class FileStateStore implements StateStore {
     } finally { await rm(temporary, { force: true }); }
   }
 
-  async #locked<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async #locked<T>(action: () => Promise<T>, signal?: AbortSignal, filename: 'state.lock' | 'governance.lock' = 'state.lock'): Promise<T> {
     signal?.throwIfAborted();
     await this.#prepare();
     signal?.throwIfAborted();
-    const file = await open(join(this.#directory, 'state.lock'),
+    const file = await open(join(this.#directory, filename),
       constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try {
       const metadata = await file.stat();
@@ -207,6 +292,11 @@ export class FileStateStore implements StateStore {
       await lock(file.fd, 'ex', signal);
       try { signal?.throwIfAborted(); return await action(); } finally { await lock(file.fd, 'un'); }
     } finally { await file.close(); }
+  }
+
+  /** A crash releases this kernel lock; it never expires while a writer is alive. */
+  withGovernanceLock<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.#locked(action, signal, 'governance.lock');
   }
 
   read(signal?: AbortSignal): Promise<OwnerState> {

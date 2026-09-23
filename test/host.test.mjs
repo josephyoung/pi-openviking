@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createOpenVikingExtension, FileStateStore, MemoryDelivery } from '../dist/host.js';
+import { createOpenVikingExtension, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
 
 async function setup(t, policy = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-host-'));
@@ -30,6 +30,10 @@ test('factory rejects owner mismatch and duplicate registration; no fallback cre
   const f = await setup(t);
   assert.throws(() => f.factory(f.pi), /DUPLICATE_MEMORY_EXTENSION/);
   assert.throws(() => createOpenVikingExtension({ ...f.options, owner: { accountId: 'test', userId: 'bob' } }), /MEMORY_OWNER_MISMATCH/);
+  assert.throws(() => createOpenVikingExtension({ ...f.options, scope: 'project_a',
+    client: { ...f.client, scope: 'project_b' } }), /MEMORY_SCOPE_MISMATCH/);
+  assert.throws(() => createOpenVikingExtension({ ...f.options, scope: null,
+    client: { ...f.client, scope: 'project_b' } }), /MEMORY_SCOPE_MISMATCH/);
 });
 
 test('disabled context never sends a query and removes previous reference blocks', async t => {
@@ -185,4 +189,27 @@ test('explicit save cannot adopt a new authorization after its source check', as
       message: { role: 'user', content: 'remember this fact' } }] } });
   assert.equal(result.details.errorCode, 'MEMORY_CONFIRM_AGAIN');
   assert.deepEqual((await original()).operations, {});
+});
+
+
+test('a durable governance barrier invalidates cached recall and does not send another search', async t => {
+  const f = await setup(t, { recallTimeoutMs: 1000 });
+  await f.service.enable('v1');
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  const first = await f.handlers.get('context')({ messages });
+  assert.equal(first.messages.length, 2);
+  await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: null });
+  assert.deepEqual((await f.handlers.get('context')({ messages: first.messages })).messages, messages);
+  assert.equal(f.result.requests, 1);
+});
+
+test('governance begun during a remote recall invalidates the late result', async t => {
+  const f = await setup(t, { recallTimeoutMs: 1000 });
+  await f.service.enable('v1');
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  f.client.recall = async () => {
+    await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: null });
+    return [{ uri: 'viking://user/alice/memories/fact.md', text: 'revoked memory', score: 0.9 }];
+  };
+  assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
 });

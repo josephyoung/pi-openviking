@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery } from '../dist/host.js';
+import { CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-selection-'));
@@ -376,4 +376,21 @@ test('explicit failure during inference or before handoff cannot silently discar
   await g.store.transact(s=>{s.operations[turn.operation.id].phase='failed';});
   assert.deepEqual(await g.delivery.collectSelection(selected),{status:'blocked',errorCode:'MEMORY_COLLECTION_EXPLICIT_CHANGED'});
   assert.equal((await g.store.read()).collectionRequests[turn.id].phase,'settled');
+});
+
+
+test('governance prevents direct selector model calls and discards results from a call already sent', async t => {
+  const held = await fixture(t);
+  await new MemoryGovernanceBarrier(held.store).begin({ kind: 'clear', scope: null });
+  const newId = await held.turn('I prefer short reports.');
+  let calls = 0;
+  const blocked = await held.selector(async () => { calls++; return json([]); }).select([newId], held.session);
+  assert.equal(blocked.status, 'blocked'); assert.equal(calls, 0);
+  const racing = await fixture(t);
+  const id = await racing.turn('I prefer concise reports.');
+  const result = await racing.selector(async () => {
+    await new MemoryGovernanceBarrier(racing.store).begin({ kind: 'clear', scope: null });
+    return json([{ sourceId: 'm0', quote: 'I prefer concise reports.' }]);
+  }).select([id], racing.session);
+  assert.equal(result.status, 'blocked');
 });

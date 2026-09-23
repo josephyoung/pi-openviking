@@ -45,3 +45,21 @@ test('foreign and ambiguous memory references are rejected locally', async t => 
   }
   assert.deepEqual(paths, []);
 });
+
+test('bounded export read rejects a body larger than stale stat before JSON decode', async t => {
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    if (request.url === '/health') {
+      response.end(JSON.stringify({ auth_mode: 'api_key', role: 'user', account_id: 'test', user_id: 'alice' }));
+    } else if (request.url.startsWith('/api/v1/content/read?')) {
+      response.write('{"status":"ok","result":"');
+      response.write('x'.repeat(20000));
+      response.end('"}');
+    } else response.end(JSON.stringify({ status: 'ok', result: { uri: 'viking://user/alice/memories/fact.md', is_dir: false, size: 1 } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = new OwnerMemoryClient({ owner: { accountId: 'test', userId: 'alice' },
+    apiKey: 'synthetic', baseUrl: `http://127.0.0.1:${server.address().port}`, timeoutMs: 1000 });
+  await assert.rejects(client.readMemoryLimited('viking://user/alice/memories/fact.md', 100), /MEMORY_EXPORT_TOO_LARGE/);
+});

@@ -1,6 +1,7 @@
 import { OpenVikingClient, isOpenVikingError } from '@openviking/sdk';
 import { checkedOwner, sameOwner, type Operation, type Owner } from './types.js';
 import type { DeliveryTransport } from './delivery.js';
+import { memoryRoot, checkedMemoryUri, checkedMemoryDocumentUri, checkedScope } from './memory-reference.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_MEMORY_RESPONSE');
@@ -34,7 +35,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   constructor(options: { owner: Owner; baseUrl: string; apiKey: string; scope?: string | null; timeoutMs: number }) {
     this.owner = checkedOwner(options.owner);
     this.scope = options.scope ?? null;
-    if (this.scope !== null) identifier(this.scope);
+    checkedScope(this.scope);
     const url = new URL(options.baseUrl);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
         || url.pathname !== '/' || !options.apiKey || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) {
@@ -43,7 +44,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
     this.#baseUrl = url.origin;
     this.#key = options.apiKey;
     this.#timeoutMs = options.timeoutMs;
-    this.#root = `viking://user/${this.owner.userId}/${this.scope === null ? '' : `peers/${this.scope}/`}memories`;
+    this.#root = memoryRoot(this.owner, this.scope);
     this.#sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
       actorPeerId: this.scope ?? undefined, timeout: this.#timeoutMs,
       fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
@@ -70,14 +71,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   #memoryUri(uri: unknown): string {
-    if (typeof uri !== 'string' || /[%?#\\\x00-\x1f]/.test(uri)) throw new Error('INVALID_MEMORY_REFERENCE');
-    const segments = uri.split('/');
-    const root = this.#root.split('/');
-    if (segments.length <= root.length || !root.every((segment, i) => segments[i] === segment)
-        || segments.slice(root.length).some(segment => !segment || segment === '.' || segment === '..')) {
-      throw new Error('MEMORY_SCOPE_MISMATCH');
-    }
-    return uri;
+    return checkedMemoryUri(this.owner, this.scope, uri);
   }
 
   async #request(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -97,6 +91,9 @@ export class OwnerMemoryClient implements DeliveryTransport {
     await this.verifyIdentity();
     const result = object(await this.#request('/sessions', 'POST', {
       session_id: identifier(id), auto_commit_policy: null,
+      ...(this.scope === null ? {} : { memory_policy: {
+        self: { enabled: false }, peer: { enabled: true },
+      } }),
     }));
     if (result.session_id !== id) throw new Error('MEMORY_SESSION_MISMATCH');
   }
@@ -119,6 +116,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
     if (!operation.payload) throw new Error('MEMORY_SOURCE_UNAVAILABLE');
     await this.#request(`/sessions/${operation.remoteSessionId}/messages`, 'POST', {
       role: 'user', content: operation.payload, source_message_ids: [operation.id],
+      ...(this.scope === null ? {} : { peer_id: this.scope }),
     });
   }
 
@@ -177,10 +175,207 @@ export class OwnerMemoryClient implements DeliveryTransport {
     return memoryUris.length ? { status: 'ready', archiveId, memoryUris } : { status: 'processing' };
   }
 
+  /** Read-only evidence that a pre-barrier writer can no longer generate data. */
+  async writerSettled(operation: Readonly<Operation>): Promise<boolean> {
+    this.#check(operation);
+    await this.verifyIdentity();
+    const phase = operation.phase === 'blocked' && operation.errorCode === 'MEMORY_RECONCILIATION_LIMIT'
+      ? operation.reconciliationPhase : operation.phase;
+    if (phase === undefined) return false; // Older unknown outcomes cannot become proof of absence.
+    if (['queued', 'session_created', 'message_delivered', 'blocked_by_pause'].includes(phase)
+      || (phase === 'blocked' && operation.errorCode === 'MEMORY_SOURCE_REVOKED')) return true;
+    if (phase === 'session_unknown') return this.sessionExists(operation.remoteSessionId);
+    if (phase === 'message_unknown') return this.hasSource(operation);
+    if (!['commit_unknown', 'processing', 'ready', 'failed'].includes(phase)) return false;
+    const receipt = operation.taskId ? { taskId: operation.taskId } : await this.findCommit(operation.remoteSessionId);
+    if (!receipt) return false;
+    const task = object(await this.#sdk.getTask(identifier(receipt.taskId)));
+    if (task.resource_id !== operation.remoteSessionId || task.task_id !== receipt.taskId
+      || task.task_type !== 'session_commit') throw new Error('MEMORY_TASK_MISMATCH');
+    // Failure can leave partial effects: settled means safe to clean, not already clean.
+    return ['completed', 'failed', 'cancelled'].includes(String(task.status));
+  }
+
+  /** Account retirement must drain writers from every trusted peer scope. */
+  writerSettledAny(operation: Readonly<Operation>): Promise<boolean> {
+    if (!sameOwner(operation.owner, this.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
+    if (operation.scope === this.scope) return this.writerSettled(operation);
+    const scoped = new OwnerMemoryClient({ owner: this.owner, baseUrl: this.#baseUrl,
+      apiKey: this.#key, scope: operation.scope, timeoutMs: this.#timeoutMs });
+    return scoped.writerSettled(operation);
+  }
+
+  /** USER keys cannot remove the namespace root. Remove verified content
+   * subtrees and every global source session; peers include scoped sessions. */
+  async clearOwnerData(): Promise<void> {
+    await this.verifyIdentity();
+    const sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
+      timeout: this.#timeoutMs, fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
+    const root = `viking://user/${this.owner.userId}`;
+    const sessions = `${root}/sessions`;
+    const seenFirst = new Set<string>();
+    while (true) {
+      let entries: unknown[];
+      try { entries = await sdk.list(sessions, { nodeLimit: 500 }); }
+      catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; entries = []; }
+      if (!Array.isArray(entries) || entries.length > 500) throw new Error('INVALID_MEMORY_RESPONSE');
+      if (!entries.length) break;
+      const first = object(entries[0]).uri;
+      if (typeof first !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+      if (seenFirst.has(first)) throw new Error('MEMORY_SOURCE_DELETION_UNCONFIRMED');
+      seenFirst.add(first);
+      for (const entry of entries) {
+        const node = object(entry);
+        const id = identifier(node.name);
+        if (node.uri !== `${sessions}/${id}` || node.isDir !== true) throw new Error('INVALID_MEMORY_RESPONSE');
+        try { await sdk.deleteSession(id); }
+        catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+      }
+    }
+    for (const target of [`${root}/memories`, `${root}/peers`]) {
+      try { await sdk.remove(target, { recursive: true, wait: true, timeout: Math.ceil(this.#timeoutMs / 1000) }); }
+      catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+      try { await sdk.stat(target); }
+      catch (error) { if (isOpenVikingError(error) && error.statusCode === 404) continue; throw error; }
+      throw new Error('MEMORY_CLEAR_UNCONFIRMED');
+    }
+  }
+
+  /** Clear only the client-bound memory tree, including its derived indexes. */
+  async clearMemoryScope(): Promise<void> {
+    await this.verifyIdentity();
+    try { await this.#sdk.remove(this.#root, { recursive: true, wait: true, timeout: Math.ceil(this.#timeoutMs / 1000) }); }
+    catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+    try { await this.#sdk.stat(this.#root); }
+    catch (error) { if (isOpenVikingError(error) && error.statusCode === 404) return; throw error; }
+    throw new Error('MEMORY_CLEAR_UNCONFIRMED');
+  }
+
+  /** Transport only: the host must persist its governance barrier and drain writers first. */
+  async replaceMemory(uri: string, content: string): Promise<void> {
+    const target = this.#documentUri(uri);
+    if (typeof content !== 'string' || !content.trim()) throw new Error('INVALID_MEMORY_REPLACEMENT');
+    await this.verifyIdentity();
+    await this.#sdk.write(target, content, { mode: 'replace', wait: true,
+      timeout: Math.ceil(this.#timeoutMs / 1000) });
+    // A successful HTTP reply alone is not proof that the replacement is visible.
+    if (await this.#sdk.read(target) !== content) throw new Error('MEMORY_REPLACEMENT_UNCONFIRMED');
+  }
+
+  /** Remove one document, never a caller-selected directory or derived metadata file. */
+  async removeMemory(uri: string): Promise<void> {
+    const target = this.#documentUri(uri);
+    await this.verifyIdentity();
+    try {
+      await this.#sdk.remove(target, { recursive: false, wait: true,
+        timeout: Math.ceil(this.#timeoutMs / 1000) });
+    } catch (error) {
+      if (!isOpenVikingError(error) || error.statusCode !== 404) throw error;
+    }
+    try { await this.#sdk.read(target); }
+    catch (error) {
+      if (isOpenVikingError(error) && error.statusCode === 404) return;
+      throw error;
+    }
+    throw new Error('MEMORY_DELETION_UNCONFIRMED');
+  }
+
+  /** A source can be removed only through an owner/scope-bound durable operation. */
+  async removeSource(operation: Readonly<Operation>): Promise<void> {
+    this.#check(operation);
+    await this.verifyIdentity();
+    try { await this.#sdk.deleteSession(operation.remoteSessionId); }
+    catch (error) {
+      if (!isOpenVikingError(error) || error.statusCode !== 404) throw error;
+    }
+    if (await this.sessionExists(operation.remoteSessionId)) throw new Error('MEMORY_SOURCE_DELETION_UNCONFIRMED');
+  }
+
+  #documentUri(uri: unknown): string {
+    return checkedMemoryDocumentUri(this.owner, this.scope, uri);
+  }
+
   async readMemory(uri: string): Promise<string> {
-    const target = this.#memoryUri(uri);
+    const target = this.#documentUri(uri);
     await this.verifyIdentity();
     return this.#sdk.read(target);
+  }
+
+  /** Bound the HTTP response before decoding JSON; stat is only a preflight hint. */
+  async readMemoryLimited(uri: string, maxBytes: number): Promise<string> {
+    const target = this.#documentUri(uri);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 2097152) {
+      throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
+    }
+    await this.verifyIdentity();
+    const query = new URLSearchParams({ uri: target, offset: '0', limit: '-1' });
+    const response = await fetch(`${this.#baseUrl}/api/v1/content/read?${query}`, {
+      redirect: 'error', signal: AbortSignal.timeout(this.#timeoutMs),
+      headers: { 'X-API-Key': this.#key,
+        ...(this.scope ? { 'X-OpenViking-Actor-Peer': this.scope } : {}) },
+    });
+    if (!response.ok) throw new Error(`MEMORY_HTTP_${response.status}`);
+    // JSON escaping may expand a byte by six; leave a small fixed envelope allowance.
+    const wireLimit = maxBytes * 6 + 16384;
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > wireLimit) {
+      await response.body?.cancel();
+      throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    }
+    if (!response.body) throw new Error('INVALID_MEMORY_RESPONSE');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > wireLimit) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally { reader.releaseLock(); }
+    const envelope = object(JSON.parse(Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), bytes).toString('utf8')));
+    if (envelope.status !== 'ok' || typeof envelope.result !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+    if (Buffer.byteLength(envelope.result, 'utf8') > maxBytes) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    return envelope.result;
+  }
+
+  async memoryDocumentSize(uri: string): Promise<number> {
+    const target = this.#documentUri(uri);
+    await this.verifyIdentity();
+    const stat = object(await this.#sdk.stat(target));
+    if (stat.uri !== target || stat.isDir !== false || !Number.isSafeInteger(stat.size) || (stat.size as number) < 0) {
+      throw new Error('INVALID_MEMORY_RESPONSE');
+    }
+    return stat.size as number;
+  }
+
+  /** Enumerate only document URIs under this credential's trusted scope. */
+  async listMemoryDocuments(): Promise<string[]> {
+    await this.verifyIdentity();
+    let entries: Record<string, unknown>[];
+    try { entries = (await this.#sdk.tree(this.#root, { nodeLimit: 10001 })) as Record<string, unknown>[]; }
+    catch (error) {
+      if (isOpenVikingError(error) && error.statusCode === 404) return [];
+      throw error;
+    }
+    if (!Array.isArray(entries) || entries.length >= 10001) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    const uris: string[] = [];
+    for (const entry of entries) {
+      const node = object(entry);
+      if (node.isDir === true) continue;
+      if (node.isDir !== false || typeof node.uri !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+      if (node.uri.endsWith('.md') && !node.uri.slice(this.#root.length + 1).split('/').some(segment => segment.startsWith('.'))) {
+        uris.push(this.#documentUri(node.uri));
+      } else {
+        this.#memoryUri(node.uri);
+      }
+    }
+    return [...new Set(uris)].sort();
   }
 
   async recall(query: string, limit: number, signal?: AbortSignal): Promise<RecalledMemory[]> {

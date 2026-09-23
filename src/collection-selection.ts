@@ -1,3 +1,4 @@
+import { governanceHoldsCollection, sourceReplayRevoked, sourceRevoked } from './governance.js';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { CollectionInputBuilder, type CollectionInputMessage, type CollectionInputResult } from './collection-input.js';
 import type { TaskFactProjection } from './task-facts.js';
@@ -78,7 +79,10 @@ export class CollectionFactSelector {
           return { status: 'blocked', code: 'MEMORY_SOURCE_UNAVAILABLE' };
         }
         const permitted = (current: OwnerState) => requests.every(request =>
-          current.collectionRequests?.[request.id]?.phase === 'settled'
+          !governanceHoldsCollection(current, request)
+          && !request.sourceEntries.some(entryId => sourceRevoked(current, request.scope, entryId)
+            || sourceReplayRevoked(current, request.scope, entryId))
+          && current.collectionRequests?.[request.id]?.phase === 'settled'
           && request.sessionId === session.getSessionId() && request.scope === (this.options.scope ?? null)
           && current.authorization.enabled && current.authorization.automaticCollection
           && current.authorization.epoch === request.authorizationEpoch

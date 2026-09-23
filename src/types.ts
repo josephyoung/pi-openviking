@@ -65,10 +65,14 @@ export interface Operation {
   phase: DeliveryPhase;
   remoteSessionId: string;
   payload?: string;
+  /** Digest of this operation's single source fact, retained after payload erasure. */
+  factDigest?: string;
   taskId?: string;
   archiveId?: string;
   memoryUris?: string[];
   errorCode?: string;
+  /** Last phase retained when automatic reconciliation exhausts its budget. */
+  reconciliationPhase?: DeliveryPhase;
   deliveryAttempts?: number;
   nextAttemptAt?: number;
 }
@@ -97,12 +101,45 @@ export interface CollectionRequest {
   sourceEntries: string[];
 }
 
+export interface GovernanceJob {
+  id: string;
+  revision: number;
+  kind: 'forget' | 'correct' | 'clear';
+  scope: string | null;
+  phase: 'draining' | 'applying' | 'complete';
+  memoryUris: string[];
+  operationIds: string[];
+  /** All pre-barrier scope writers must be reconciled or edited before release. */
+  writerOperationIds: string[];
+  /** Pre-barrier automatic requests must settle before the edit is acknowledged. */
+  collectionRequestIds?: string[];
+  /** Hashes of stable entry identity, never deleted plaintext. */
+  sourceKeys: string[];
+  /** Entry-level replay fence activated only after pre-barrier collection drains. */
+  replaySourceKeys?: string[];
+  /** Auditable decisions for pre-barrier facts whose text may paraphrase the target. */
+  writerClassifications?: Record<string, 'target' | 'unrelated'>;
+  /** Owner-reviewed exact derivative text to remove from a shared target document. */
+  mergedResolutions?: Record<string, string>;
+  /** A confirmed whole-scope clear replaces this unfinished selective job. */
+  supersededBy?: string;
+  cancelledByRetirement?: boolean;
+  /** Transient exact-text plan. Removed after verified selective cleanup. */
+  selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
+  errorCode?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
 export interface OwnerState {
   version: 1;
   owner: Owner;
   revision: number;
   authorization: Authorization;
+  /** Durable account retirement fence; only removed after remote clear and host cleanup. */
+  retirement?: { id: string; phase: 'requested' | 'remote_cleared'; requestedAt: string };
   operations: Record<string, Operation>;
+  governance?: { revision: number; jobs: Record<string, GovernanceJob> };
   /** Source receipts contain no conversation text and survive consent changes. */
   collectedSources?: Record<string, CollectedSource>;
   collectionRequests?: Record<string, CollectionRequest>;

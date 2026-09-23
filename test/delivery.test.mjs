@@ -232,8 +232,10 @@ test('fork ancestors and concurrent viewers share one durable automatic source r
   assert.equal(Object.keys(state.collectedSources).length, 1);
   assert.equal(Object.keys(state.operations).length, 1);
   assert.equal((await f.recreate().service.collect(source, 'fact', policy)).phase, 'ready');
-  // Conflict detection remains effective after successful payload erasure.
-  await assert.rejects(f.recreate().service.collect(source, 'different fact', policy), /MEMORY_SOURCE_CONFLICT/);
+  // An independently selected fact from the same source has its own receipt.
+  const other = await f.recreate().service.collect(source, 'different fact', policy);
+  assert.equal(other.phase, 'queued');
+  assert.notEqual(other.id, first.id);
 });
 
 test('a fresh consent cannot resurrect a source cleared by pause, including on another branch', async t => {
