@@ -69,6 +69,8 @@ export interface Operation {
   archiveId?: string;
   memoryUris?: string[];
   errorCode?: string;
+  /** Last phase retained when automatic reconciliation exhausts its budget. */
+  reconciliationPhase?: DeliveryPhase;
   deliveryAttempts?: number;
   nextAttemptAt?: number;
 }
@@ -109,6 +111,8 @@ export interface GovernanceJob {
   writerOperationIds: string[];
   /** Hashes of stable entry identity, never deleted plaintext. */
   sourceKeys: string[];
+  errorCode?: string;
+  completedAt?: string;
   createdAt: string;
 }
 

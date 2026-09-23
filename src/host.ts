@@ -22,6 +22,8 @@ export { CollectionLifecycle } from './collection-lifecycle.js';
 export { CollectionSessionRegistry } from './collection-sessions.js';
 export { MemoryDelivery } from './delivery.js';
 export { MemoryGovernanceBarrier } from './governance.js';
+export { MemoryClearCoordinator } from './governance-coordinator.js';
+export type { GovernanceTransport, GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
 export type { CollectionHandoffResult } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
 export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';

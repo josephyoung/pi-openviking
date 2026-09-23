@@ -46,6 +46,8 @@ function verify(state: OwnerState, owner: Owner): void {
         || revisions.has(job.revision) || !['forget', 'correct', 'clear'].includes(job.kind)
         || !['draining', 'applying', 'complete'].includes(job.phase)
         || (job.scope !== null && (typeof job.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(job.scope)))
+        || (job.errorCode !== undefined && (typeof job.errorCode !== 'string' || !/^MEMORY_[A-Z_]+$/.test(job.errorCode)))
+        || (job.completedAt !== undefined && (job.phase !== 'complete' || !Number.isFinite(Date.parse(job.completedAt))))
         || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))
         || !Array.isArray(job.sourceKeys) || new Set(job.sourceKeys).size !== job.sourceKeys.length
         || job.sourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
@@ -152,6 +154,10 @@ function verify(state: OwnerState, owner: Owner): void {
     if (id !== operation.id || !operation.owner || !sameOwner(operation.owner, owner)) {
       throw new Error('MEMORY_OWNER_MISMATCH');
     }
+    if (operation.reconciliationPhase !== undefined && !['queued', 'session_unknown', 'session_created',
+      'message_unknown', 'message_delivered', 'commit_unknown', 'processing'].includes(operation.reconciliationPhase)) {
+      throw new Error('INVALID_MEMORY_RECONCILIATION_PHASE');
+    }
     if (operation.collectionSources !== undefined && (operation.kind !== 'automatic'
       || !Array.isArray(operation.collectionSources) || !operation.collectionSources.length
       || operation.collectionSources.some(source => !isCollectionSource(source)))) {
@@ -232,11 +238,11 @@ export class FileStateStore implements StateStore {
     } finally { await rm(temporary, { force: true }); }
   }
 
-  async #locked<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async #locked<T>(action: () => Promise<T>, signal?: AbortSignal, filename: 'state.lock' | 'governance.lock' = 'state.lock'): Promise<T> {
     signal?.throwIfAborted();
     await this.#prepare();
     signal?.throwIfAborted();
-    const file = await open(join(this.#directory, 'state.lock'),
+    const file = await open(join(this.#directory, filename),
       constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try {
       const metadata = await file.stat();
@@ -246,6 +252,11 @@ export class FileStateStore implements StateStore {
       await lock(file.fd, 'ex', signal);
       try { signal?.throwIfAborted(); return await action(); } finally { await lock(file.fd, 'un'); }
     } finally { await file.close(); }
+  }
+
+  /** A crash releases this kernel lock; it never expires while a writer is alive. */
+  withGovernanceLock<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.#locked(action, signal, 'governance.lock');
   }
 
   read(signal?: AbortSignal): Promise<OwnerState> {

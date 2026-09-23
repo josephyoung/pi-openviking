@@ -97,6 +97,9 @@ export class OwnerMemoryClient implements DeliveryTransport {
     await this.verifyIdentity();
     const result = object(await this.#request('/sessions', 'POST', {
       session_id: identifier(id), auto_commit_policy: null,
+      ...(this.scope === null ? {} : { memory_policy: {
+        self: { enabled: false }, peer: { enabled: true },
+      } }),
     }));
     if (result.session_id !== id) throw new Error('MEMORY_SESSION_MISMATCH');
   }
@@ -119,6 +122,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
     if (!operation.payload) throw new Error('MEMORY_SOURCE_UNAVAILABLE');
     await this.#request(`/sessions/${operation.remoteSessionId}/messages`, 'POST', {
       role: 'user', content: operation.payload, source_message_ids: [operation.id],
+      ...(this.scope === null ? {} : { peer_id: this.scope }),
     });
   }
 
@@ -175,6 +179,37 @@ export class OwnerMemoryClient implements DeliveryTransport {
       if (recalled.some(memory => memory.uri === uri)) memoryUris.push(uri);
     }
     return memoryUris.length ? { status: 'ready', archiveId, memoryUris } : { status: 'processing' };
+  }
+
+  /** Read-only evidence that a pre-barrier writer can no longer generate data. */
+  async writerSettled(operation: Readonly<Operation>): Promise<boolean> {
+    this.#check(operation);
+    await this.verifyIdentity();
+    const phase = operation.phase === 'blocked' && operation.errorCode === 'MEMORY_RECONCILIATION_LIMIT'
+      ? operation.reconciliationPhase : operation.phase;
+    if (phase === undefined) return false; // Older unknown outcomes cannot become proof of absence.
+    if (['queued', 'session_created', 'message_delivered', 'blocked_by_pause'].includes(phase)
+      || (phase === 'blocked' && operation.errorCode === 'MEMORY_SOURCE_REVOKED')) return true;
+    if (phase === 'session_unknown') return this.sessionExists(operation.remoteSessionId);
+    if (phase === 'message_unknown') return this.hasSource(operation);
+    if (!['commit_unknown', 'processing', 'ready', 'failed'].includes(phase)) return false;
+    const receipt = operation.taskId ? { taskId: operation.taskId } : await this.findCommit(operation.remoteSessionId);
+    if (!receipt) return false;
+    const task = object(await this.#sdk.getTask(identifier(receipt.taskId)));
+    if (task.resource_id !== operation.remoteSessionId || task.task_id !== receipt.taskId
+      || task.task_type !== 'session_commit') throw new Error('MEMORY_TASK_MISMATCH');
+    // Failure can leave partial effects: settled means safe to clean, not already clean.
+    return ['completed', 'failed', 'cancelled'].includes(String(task.status));
+  }
+
+  /** Clear only the client-bound memory tree, including its derived indexes. */
+  async clearMemoryScope(): Promise<void> {
+    await this.verifyIdentity();
+    try { await this.#sdk.remove(this.#root, { recursive: true, wait: true, timeout: Math.ceil(this.#timeoutMs / 1000) }); }
+    catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+    try { await this.#sdk.stat(this.#root); }
+    catch (error) { if (isOpenVikingError(error) && error.statusCode === 404) return; throw error; }
+    throw new Error('MEMORY_CLEAR_UNCONFIRMED');
   }
 
   /** Transport only: the host must persist its governance barrier and drain writers first. */

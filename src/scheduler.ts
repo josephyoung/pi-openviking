@@ -78,6 +78,7 @@ export class DeliveryScheduler {
         if (attempts >= maxAttemptsPerPhase) {
           // This is an unresolved outcome, never a claim that the server failed
           // or cancelled work. Keep remote references for governance/inspection.
+          operation.reconciliationPhase = operation.phase;
           operation.phase = 'blocked';
           operation.errorCode = 'MEMORY_RECONCILIATION_LIMIT';
           operation.updatedAt = new Date(now).toISOString();
