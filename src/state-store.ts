@@ -66,6 +66,13 @@ function verify(state: OwnerState, owner: Owner): void {
         || uri.slice(root.length).split('/').some(segment => !segment || segment.startsWith('.')))) {
         throw new Error('INVALID_MEMORY_GOVERNANCE');
       }
+      const plan = job.selectivePlan;
+      if (plan !== undefined && (job.kind === 'clear' || job.phase === 'complete'
+        || plan.memoryUri !== job.memoryUris[0]
+        || typeof plan.selectedText !== 'string' || !plan.selectedText.trim() || plan.selectedText.length > 16384
+        || typeof plan.replacementText !== 'string' || plan.replacementText.length > 16384
+        || (job.kind === 'correct' && (!plan.replacementText.trim() || plan.replacementText.includes(plan.selectedText)))
+        || (job.kind === 'forget' && plan.replacementText !== ''))) throw new Error('INVALID_MEMORY_GOVERNANCE');
       revisions.add(job.revision);
       if (job.phase !== 'complete') {
         if (pendingScopes.has(job.scope)) throw new Error('INVALID_MEMORY_GOVERNANCE');

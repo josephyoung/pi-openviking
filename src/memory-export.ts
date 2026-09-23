@@ -17,6 +17,7 @@ export interface ExportedMemory {
     entryId: string;
     createdAt: string;
   }>;
+  revisions: Array<{ kind: 'correct' | 'forget'; revision: number; createdAt: string; completedAt?: string }>;
 }
 
 interface Cursor {
@@ -87,7 +88,12 @@ export class MemoryExportService {
         if (![source.sessionId, source.entryId].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id))
           || !Number.isFinite(Date.parse(source.createdAt))) throw new Error('INVALID_MEMORY_SOURCE');
       }
-      items.push({ uri, content, sources });
+      const revisions = Object.values(start.governance?.jobs ?? {}).filter(job =>
+        job.phase === 'complete' && job.scope === this.transport.scope
+        && (job.kind === 'correct' || job.kind === 'forget') && job.memoryUris.includes(uri))
+        .map(job => ({ kind: job.kind as 'correct' | 'forget', revision: job.revision,
+          createdAt: job.createdAt, completedAt: job.completedAt }));
+      items.push({ uri, content, sources, revisions });
     }
     const finish = await this.store.read();
     if (finish.revision !== start.revision || governancePending(finish, this.transport.scope)) {

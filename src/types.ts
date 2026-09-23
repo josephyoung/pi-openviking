@@ -111,6 +111,8 @@ export interface GovernanceJob {
   writerOperationIds: string[];
   /** Hashes of stable entry identity, never deleted plaintext. */
   sourceKeys: string[];
+  /** Transient exact-text plan. Removed after verified selective cleanup. */
+  selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
   errorCode?: string;
   completedAt?: string;
   createdAt: string;

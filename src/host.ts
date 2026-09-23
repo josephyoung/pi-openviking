@@ -25,6 +25,8 @@ export { MemoryGovernanceBarrier } from './governance.js';
 export { MemoryClearCoordinator } from './governance-coordinator.js';
 export { MemoryExportService } from './memory-export.js';
 export type { MemoryExportTransport, ExportedMemory } from './memory-export.js';
+export { MemorySelectiveService } from './memory-selective.js';
+export type { SelectiveTransport } from './memory-selective.js';
 export type { GovernanceTransport, GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
 export type { CollectionHandoffResult } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';

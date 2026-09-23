@@ -39,10 +39,20 @@ export function blockRevokedOperations(state: OwnerState): void {
 export class MemoryGovernanceBarrier {
   constructor(private readonly store: StateStore) {}
 
-  async begin(input: { kind: GovernanceJob['kind']; scope: string | null; memoryUri?: string }): Promise<GovernanceJob> {
+  async begin(input: { kind: GovernanceJob['kind']; scope: string | null; memoryUri?: string;
+    selectivePlan?: GovernanceJob['selectivePlan'] }): Promise<GovernanceJob> {
     if (!input || !['forget', 'correct', 'clear'].includes(input.kind)
       || (input.scope !== null && (typeof input.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.scope)))
-      || (input.kind === 'clear' ? input.memoryUri !== undefined : typeof input.memoryUri !== 'string')) {
+      || (input.kind === 'clear' ? input.memoryUri !== undefined || input.selectivePlan !== undefined : typeof input.memoryUri !== 'string')
+      || (input.selectivePlan !== undefined && (input.kind === 'clear'
+        || input.selectivePlan.memoryUri !== input.memoryUri
+        || typeof input.selectivePlan.selectedText !== 'string' || !input.selectivePlan.selectedText.trim()
+        || input.selectivePlan.selectedText.length > 16384
+        || typeof input.selectivePlan.replacementText !== 'string'
+        || input.selectivePlan.replacementText.length > 16384
+        || (input.kind === 'correct' && (!input.selectivePlan.replacementText.trim()
+          || input.selectivePlan.replacementText.includes(input.selectivePlan.selectedText)))
+        || (input.kind === 'forget' && input.selectivePlan.replacementText !== '')))) {
       throw new Error('INVALID_MEMORY_GOVERNANCE');
     }
     input = structuredClone(input);
@@ -50,17 +60,19 @@ export class MemoryGovernanceBarrier {
       if (input.kind === 'correct' && !state.authorization.enabled) throw new Error('MEMORY_DISABLED');
       if (governancePending(state, input.scope)) throw new Error('MEMORY_GOVERNANCE_PENDING');
       const scoped = Object.values(state.operations).filter(operation => operation.scope === input.scope);
-      const operations = input.kind === 'clear' ? scoped : scoped.filter(operation => operation.memoryUris?.includes(input.memoryUri!));
-      if (input.kind !== 'clear' && !operations.length) throw new Error('MEMORY_TARGET_NOT_FOUND');
-      const entries = new Set(operations.flatMap(operation => [operation.source.entryId,
+      const operations = input.kind === 'clear' ? scoped : scoped.filter(operation =>
+        operation.memoryUris?.includes(input.memoryUri!)
+        || input.selectivePlan && operation.payload?.includes(input.selectivePlan.selectedText));
+      if (input.kind !== 'clear' && !operations.length && !input.selectivePlan) throw new Error('MEMORY_TARGET_NOT_FOUND');
+      const entries = new Set((input.kind === 'clear' || input.selectivePlan ? scoped : operations).flatMap(operation => [operation.source.entryId,
         ...(operation.collectionSources ?? []).map(source => source.entryId),
         ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]));
       const now = new Date().toISOString();
       for (const request of Object.values(state.collectionRequests ?? {})) {
         if (request.scope !== input.scope) continue;
-        if (input.kind === 'clear') for (const entryId of request.sourceEntries) entries.add(entryId);
+        if (input.kind === 'clear' || input.selectivePlan) for (const entryId of request.sourceEntries) entries.add(entryId);
         if (['running', 'settled'].includes(request.phase)
-          && (input.kind === 'clear' || request.sourceEntries.some(entryId => entries.has(entryId)))) {
+          && (input.kind === 'clear' || input.selectivePlan || request.sourceEntries.some(entryId => entries.has(entryId)))) {
           request.phase = 'discarded';
           delete request.selectionLease;
           request.updatedAt = now;
@@ -72,7 +84,8 @@ export class MemoryGovernanceBarrier {
         memoryUris: input.kind === 'clear' ? [...new Set(operations.flatMap(operation => operation.memoryUris ?? []))] : [input.memoryUri!],
         operationIds: operations.map(operation => operation.id),
         writerOperationIds: scoped.map(operation => operation.id),
-        sourceKeys: [...entries].map(entryId => sourceKey(state, input.scope, entryId)) };
+        sourceKeys: [...entries].map(entryId => sourceKey(state, input.scope, entryId)),
+        ...(input.selectivePlan ? { selectivePlan: input.selectivePlan } : {}) };
       state.governance.jobs[job.id] = job;
       blockRevokedOperations(state);
       return structuredClone(job);

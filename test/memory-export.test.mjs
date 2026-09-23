@@ -32,10 +32,10 @@ test('export pages current scope with source metadata and no foreign project', a
   const first = await exportService.page({ limit: 1 });
   assert.deepEqual(first.items, [{ uri: f.ownUri, content: 'own text', sources: [
     { kind: 'explicit', sessionId: 'chat-one', entryId: 'entry-one', createdAt: first.items[0].sources[0].createdAt },
-  ] }]);
+  ], revisions: [] }]);
   assert(first.nextCursor);
   const second = await exportService.page({ limit: 1, cursor: first.nextCursor });
-  assert.deepEqual(second, { items: [{ uri: f.secondUri, content: 'untracked owned text', sources: [] }], nextCursor: undefined });
+  assert.deepEqual(second, { items: [{ uri: f.secondUri, content: 'untracked owned text', sources: [], revisions: [] }], nextCursor: undefined });
   assert(!JSON.stringify([first, second]).includes(f.projectUri));
 });
 
