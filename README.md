@@ -44,13 +44,16 @@ supervisor; hosts must still provide their own worker tool policy.
   tokenizer, per-request cache and pause/lifecycle invalidation.
 - Default-off consent, explicit durable enqueue and stable source deduplication.
 - A dedicated remote Session per save operation, with persisted causal phases.
-  An unknown message/commit outcome is reconciled through public APIs and never
-  blindly retransmitted. Missing or expired receipts require reconciliation;
-  they do not authorize repeating a non-idempotent call.
+  If session creation failed before the remote accepted it, the scheduler may
+  retry only that empty Session with its original stable ID after a USER-scoped
+  absence check. Pause or revoked consent blocks the retry. An unknown
+  message/commit outcome is reconciled through public APIs and never blindly
+  retransmitted. Missing or expired receipts do not authorize repeating a
+  non-idempotent call.
 - Owner-level background scheduling with durable backoff, startup recovery,
   bounded processing and shutdown. Exhausted reconciliation stays visibly blocked;
   on restart, an exhausted accepted commit gets one read-only task check. It
-  never turns an unknown remote outcome into an automatic resend.
+  never resends an unknown message or commit.
 - Protected resource-loader configuration rejects workspace packages/extensions
   while preserving explicitly supplied trusted Skills. Apply before package
   resolution; `noExtensions` alone is insufficient.
