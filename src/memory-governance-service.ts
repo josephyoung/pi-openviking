@@ -4,6 +4,7 @@ import { MemoryClearCoordinator, type GovernanceProgress, type GovernanceStateSt
 import { MemorySelectiveService, type SelectiveTransport } from './memory-selective.js';
 import { MemoryExportService, type MemoryExportTransport } from './memory-export.js';
 import { checkedOwner, sameOwner, type GovernanceJob } from './types.js';
+import type { MemoryDelivery } from './delivery.js';
 
 export type MemoryGovernanceClient = GovernanceTransport & SelectiveTransport & MemoryExportTransport;
 export interface GovernanceReceipt { jobId: string; status: GovernanceProgress['status']; errorCode?: string }
@@ -13,10 +14,13 @@ export class MemoryGovernanceService {
   readonly #selective: MemorySelectiveService;
   readonly #clear: MemoryClearCoordinator;
   readonly #export: MemoryExportService;
-  constructor(private readonly store: GovernanceStateStore, private readonly client: MemoryGovernanceClient) {
+  constructor(private readonly store: GovernanceStateStore, private readonly client: MemoryGovernanceClient,
+    delivery: Pick<MemoryDelivery, 'advanceGovernance' | 'owner'>) {
     checkedOwner(store.owner);
     if (!sameOwner(store.owner, client.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
-    this.#selective = new MemorySelectiveService(store, client);
+    if (!delivery || !sameOwner(store.owner, delivery.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
+    this.#selective = new MemorySelectiveService(store, client,
+      (operationId, jobId) => delivery.advanceGovernance(operationId, jobId));
     this.#clear = new MemoryClearCoordinator(store, client);
     this.#export = new MemoryExportService(store, client);
   }
@@ -33,7 +37,7 @@ export class MemoryGovernanceService {
     const job = await new MemoryGovernanceBarrier(this.store).begin({ kind: 'clear', scope: this.client.scope });
     return this.#receipt(job, await this.#clear.advance(job.id));
   }
-  exportPage(limit: number, cursor?: string) { return this.#export.page({ limit, cursor }); }
+  exportPage(limit: number, cursor?: string, maxBytes?: number) { return this.#export.page({ limit, cursor, maxBytes }); }
 
   async status(id: string): Promise<GovernanceReceipt> {
     if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('INVALID_MEMORY_GOVERNANCE');

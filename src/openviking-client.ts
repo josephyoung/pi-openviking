@@ -1,6 +1,7 @@
 import { OpenVikingClient, isOpenVikingError } from '@openviking/sdk';
 import { checkedOwner, sameOwner, type Operation, type Owner } from './types.js';
 import type { DeliveryTransport } from './delivery.js';
+import { memoryRoot, checkedMemoryUri, checkedMemoryDocumentUri, checkedScope } from './memory-reference.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_MEMORY_RESPONSE');
@@ -34,7 +35,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   constructor(options: { owner: Owner; baseUrl: string; apiKey: string; scope?: string | null; timeoutMs: number }) {
     this.owner = checkedOwner(options.owner);
     this.scope = options.scope ?? null;
-    if (this.scope !== null) identifier(this.scope);
+    checkedScope(this.scope);
     const url = new URL(options.baseUrl);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
         || url.pathname !== '/' || !options.apiKey || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) {
@@ -43,7 +44,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
     this.#baseUrl = url.origin;
     this.#key = options.apiKey;
     this.#timeoutMs = options.timeoutMs;
-    this.#root = `viking://user/${this.owner.userId}/${this.scope === null ? '' : `peers/${this.scope}/`}memories`;
+    this.#root = memoryRoot(this.owner, this.scope);
     this.#sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
       actorPeerId: this.scope ?? undefined, timeout: this.#timeoutMs,
       fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
@@ -70,14 +71,7 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   #memoryUri(uri: unknown): string {
-    if (typeof uri !== 'string' || /[%?#\\\x00-\x1f]/.test(uri)) throw new Error('INVALID_MEMORY_REFERENCE');
-    const segments = uri.split('/');
-    const root = this.#root.split('/');
-    if (segments.length <= root.length || !root.every((segment, i) => segments[i] === segment)
-        || segments.slice(root.length).some(segment => !segment || segment === '.' || segment === '..')) {
-      throw new Error('MEMORY_SCOPE_MISMATCH');
-    }
-    return uri;
+    return checkedMemoryUri(this.owner, this.scope, uri);
   }
 
   async #request(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -253,18 +247,23 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   #documentUri(uri: unknown): string {
-    const target = this.#memoryUri(uri);
-    const relative = target.slice(this.#root.length + 1);
-    if (!relative.endsWith('.md') || relative.split('/').some(segment => segment.startsWith('.'))) {
-      throw new Error('INVALID_MEMORY_DOCUMENT');
-    }
-    return target;
+    return checkedMemoryDocumentUri(this.owner, this.scope, uri);
   }
 
   async readMemory(uri: string): Promise<string> {
     const target = this.#documentUri(uri);
     await this.verifyIdentity();
     return this.#sdk.read(target);
+  }
+
+  async memoryDocumentSize(uri: string): Promise<number> {
+    const target = this.#documentUri(uri);
+    await this.verifyIdentity();
+    const stat = object(await this.#sdk.stat(target));
+    if (stat.uri !== target || stat.isDir !== false || !Number.isSafeInteger(stat.size) || (stat.size as number) < 0) {
+      throw new Error('INVALID_MEMORY_RESPONSE');
+    }
+    return stat.size as number;
   }
 
   /** Enumerate only document URIs under this credential's trusted scope. */

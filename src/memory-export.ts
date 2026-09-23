@@ -1,10 +1,12 @@
 import { governancePending } from './governance.js';
 import { checkedOwner, sameOwner, type Owner, type StateStore } from './types.js';
+import { checkedScope, isMemoryDocumentUri } from './memory-reference.js';
 
 export interface MemoryExportTransport {
   readonly owner: Owner;
   readonly scope: string | null;
   listMemoryDocuments(): Promise<string[]>;
+  memoryDocumentSize(uri: string): Promise<number>;
   readMemory(uri: string): Promise<string>;
 }
 
@@ -13,6 +15,7 @@ export interface ExportedMemory {
   content: string;
   sources: Array<{
     kind: 'explicit' | 'automatic';
+    status: 'current' | 'revoked';
     sessionId: string;
     entryId: string;
     createdAt: string;
@@ -47,41 +50,56 @@ function decodeCursor(value: string): Cursor {
 
 /** Host-owned, read-only export. Model or browser parameters cannot select an owner or project. */
 export class MemoryExportService {
-  constructor(private readonly store: StateStore, private readonly transport: MemoryExportTransport) {
+  constructor(private readonly store: StateStore, private readonly transport: MemoryExportTransport,
+    private readonly maxDocumentBytes = 1048576, private readonly maxPageBytes = 2097152) {
     checkedOwner(store.owner);
     if (!sameOwner(store.owner, transport.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
-    if (transport.scope !== null && (typeof transport.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(transport.scope))) {
-      throw new Error('INVALID_MEMORY_SCOPE');
-    }
+    checkedScope(transport.scope);
+    if (![maxDocumentBytes, maxPageBytes].every(value => Number.isSafeInteger(value) && value > 0)
+      || maxPageBytes < maxDocumentBytes) throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
   }
 
-  async page(input: { limit: number; cursor?: string }): Promise<{ items: ExportedMemory[]; nextCursor?: string }> {
+  async page(input: { limit: number; cursor?: string; maxBytes?: number }): Promise<{ items: ExportedMemory[]; nextCursor?: string }> {
     if (!input || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
     }
+    const budget = input.maxBytes ?? this.maxPageBytes;
+    if (!Number.isSafeInteger(budget) || budget < 1 || budget > this.maxPageBytes) throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
     const start = await this.store.read();
     if (governancePending(start, this.transport.scope)) throw new Error('MEMORY_GOVERNANCE_PENDING');
     const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor);
     if (cursor && (!sameOwner(cursor.owner, this.store.owner) || cursor.scope !== this.transport.scope
       || cursor.revision !== start.revision)) throw new Error('INVALID_MEMORY_EXPORT_CURSOR');
     const uris = await this.transport.listMemoryDocuments();
-    const root = `viking://user/${this.store.owner.userId}/${this.transport.scope === null ? '' : `peers/${this.transport.scope}/`}memories/`;
     if (!Array.isArray(uris) || uris.some((uri, index) => typeof uri !== 'string'
-      || !uri.startsWith(root) || /[%?#\\\x00-\x1f]/.test(uri) || !uri.endsWith('.md')
-      || uri.slice(root.length).split('/').some(segment => !segment || segment === '.' || segment === '..' || segment.startsWith('.'))
+      || !isMemoryDocumentUri(this.store.owner, this.transport.scope, uri)
       || index > 0 && uri <= uris[index - 1])) {
       throw new Error('INVALID_MEMORY_RESPONSE');
     }
     const position = cursor ? uris.indexOf(cursor.after) : -1;
     if (cursor && position < 0) throw new Error('INVALID_MEMORY_EXPORT_CURSOR');
-    const selected = uris.slice(position + 1, position + 1 + input.limit);
+    const selected: string[] = [];
+    let declaredBytes = 0;
+    for (const uri of uris.slice(position + 1, position + 1 + input.limit)) {
+      const size = await this.transport.memoryDocumentSize(uri);
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error('INVALID_MEMORY_RESPONSE');
+      if (size > this.maxDocumentBytes || size > budget && !selected.length) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+      if (declaredBytes + size > budget) break;
+      declaredBytes += size; selected.push(uri);
+    }
     const items: ExportedMemory[] = [];
+    let actualBytes = 0;
     for (const uri of selected) {
       const content = await this.transport.readMemory(uri);
       if (typeof content !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+      const bytes = Buffer.byteLength(content, 'utf8');
+      actualBytes += bytes;
+      if (bytes > this.maxDocumentBytes || actualBytes > budget) throw new Error('MEMORY_EXPORT_TOO_LARGE');
       const sources = Object.values(start.operations).filter(operation => operation.scope === this.transport.scope
-        && operation.memoryUris?.includes(uri) && operation.phase === 'ready').map(operation => ({
-        kind: operation.kind, sessionId: operation.source.sessionId,
+        && operation.memoryUris?.includes(uri) && (operation.phase === 'ready'
+          || operation.phase === 'blocked' && operation.errorCode === 'MEMORY_SOURCE_REVOKED')).map(operation => ({
+        kind: operation.kind, status: operation.phase === 'ready' ? 'current' as const : 'revoked' as const,
+        sessionId: operation.source.sessionId,
         entryId: operation.source.entryId, createdAt: operation.createdAt,
       }));
       for (const source of sources) {

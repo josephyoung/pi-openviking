@@ -3,7 +3,7 @@
 An independent OpenViking memory extension for pi, tracked by
 [Dano #465](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/465).
 
-**Implementation in progress. Version 0.1.0 is published; production activation remains pending.**
+**Implementation in progress. Version 0.1.5 is published; governance changes on this branch are not yet released.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
 against pi 0.85.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
@@ -11,7 +11,7 @@ The Linux CLI now runs through the public pi entry; memory-enabled CLI acceptanc
 
 ## Implemented
 
-### Unreleased host worker integration
+### Host worker integration
 
 The protected bootstrap accepts an optional `toolProviderModule` from its
 administrator-owned profile. This file must resolve inside the validated,
@@ -23,7 +23,7 @@ native tool names and `user_bash`, with the same bounded IPC and cancellation.
 Invalid modules fail startup; execution errors never fall back to host tools.
 This allows a host to retain its own tool policies, such as Heimdall, inside
 the worker. It does not itself implement Dano's Heimdall adapter or multi-user
-supervisor, and is not part of the already-published 0.1.0 artifact.
+supervisor; hosts must still provide their own worker tool policy.
 
 ### Current capabilities
 
@@ -62,8 +62,8 @@ supervisor, and is not part of the already-published 0.1.0 artifact.
 
 Requires Node.js >=22.19, a POSIX system, Python and a C++ compiler for the
 `fs-ext` native advisory-lock binding. Install scripts for that audited native
-module must run when installing. This first local run used Node 26.8.2; the
-release gate must also test the selected Linux/Node deployment combination.
+module must run when installing. The governance suite is exercised with Node
+22.22.3; release CI uses Node 22.23.2 on Linux.
 
 ```sh
 npm ci
@@ -73,7 +73,7 @@ npm run check
 
 `npm test` covers independent processes, killed writers, concurrent processors,
 response loss, source conflicts, owner mismatch, consent, recall budgets and
-lifecycle behavior (38 tests in the current development run). It does not prove
+lifecycle behavior. It does not prove
 end-to-end host isolation or UI acceptance.
 
 For a separately provisioned disposable `extension-test-*` account, place an
@@ -99,10 +99,9 @@ from tool-writable paths. That launcher must be integrated and verified before
 activating memory in either pi or Dano. Current modules are not a substitute
 for that boundary.
 
-Further #474 gates: memory-enabled CLI acceptance and Dano worker lifecycle integration,
-credential isolation, Dano exact-version integration, authenticated settings
-and management, ordinary pi and real in-app Browser acceptance. Subsequent
-#475–477 work covers full collection/lifecycle/governance and release gates.
+Issue #476 still requires Dano management integration, real browser acceptance,
+account retirement and release verification. Publishing the extension alone
+does not activate these capabilities in Dano.
 
 ## Verified service combination
 
@@ -239,8 +238,33 @@ prereleases use `next`. A manual Actions run can retry an unpublished version.
 
 Publishing uses npm Trusted Publishing bound to `josephyoung/pi-openviking`
 and workflow filename `publish.yml`, with permission to publish. No npm token
-is stored in GitHub secrets. The trust relationship must be configured on npm
-before the first automated release.
+is stored in GitHub secrets. The npm trust relationship names this repository
+and workflow and permits direct publishing.
+
+## Governance host API (unreleased)
+
+The host constructs one `MemoryGovernanceService(stateStore, ownerClient,
+delivery)` per authenticated owner and trusted scope. Pass it to the extension
+factory as `governance` together with its scheduler's `wake()` method; use the
+same service for authenticated management controls. Never accept owner, project,
+credential or arbitrary remote Session identifiers from a model or browser.
+`MemoryGovernanceScheduler` resumes pending jobs after restart without a viewer.
+Keep the owner USER credential until cleanup is verified; a pending receipt is
+not permission to delete local state or claim success.
+
+`correct` and `forget` require a unique exact selection in a listed document.
+Ambiguity fails before mutation. A durable barrier suppresses recall while old
+scope writers drain, then public OpenViking APIs update only the selected text
+and verify the old text is gone. Shared documents retain unrelated content.
+The model tools return a job ID and distinguish `pending` from `complete`;
+`memory_clear` asks for a real UI confirmation first. Hosts must also confirm
+clear in their own management UI. `exportPage` returns only bound-scope content
+and source metadata; it validates cursors and has per-document/page byte
+budgets. The model export tool uses a smaller budget than the host API.
+
+Exact-text cleanup and real-service fixtures do not prove semantic paraphrase
+erasure, account retirement, or Dano browser acceptance. Those are #476 release
+gates, so this branch must not be treated as the completed feature.
 
 ## Automatic collection host API (0.1.3)
 
@@ -288,7 +312,7 @@ signals too. The scheduler also fences late callbacks at the handoff boundary.
 
 The host must still wire protected session recovery, the configured model and
 credential snapshot, separate consent controls, status and lifecycle ownership.
-This branch does not enable collection in the published package by itself.
+Publishing the extension does not authorize collection for a user by itself.
 
 `CollectionSessionRegistry` supplies the owner's persistent source resolver.
 Configure it with that owner's private session root outside tool access, then

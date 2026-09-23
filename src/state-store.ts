@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { flock } from 'fs-ext';
 import { checkedOwner, sameOwner, isCollectionSource, type Owner, type OwnerState, type StateStore } from './types.js';
+import { isMemoryDocumentUri } from './memory-reference.js';
 
 async function lock(fd: number, operation: 'ex' | 'un', signal?: AbortSignal): Promise<void> {
   // Blocking flock consumes a libuv worker: enough waiting writers can starve
@@ -60,10 +61,7 @@ function verify(state: OwnerState, owner: Owner): void {
         || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
         || !Array.isArray(job.memoryUris) || new Set(job.memoryUris).size !== job.memoryUris.length
         || (job.kind !== 'clear' && job.memoryUris.length !== 1)) throw new Error('INVALID_MEMORY_GOVERNANCE');
-      const root = `viking://user/${owner.userId}/${job.scope === null ? '' : `peers/${job.scope}/`}memories/`;
-      if (job.memoryUris.some(uri => typeof uri !== 'string' || !uri.startsWith(root)
-        || /[%?#\\\x00-\x1f]/.test(uri) || !uri.endsWith('.md')
-        || uri.slice(root.length).split('/').some(segment => !segment || segment.startsWith('.')))) {
+      if (job.memoryUris.some(uri => !isMemoryDocumentUri(owner, job.scope, uri))) {
         throw new Error('INVALID_MEMORY_GOVERNANCE');
       }
       const plan = job.selectivePlan;

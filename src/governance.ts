@@ -64,13 +64,13 @@ export class MemoryGovernanceBarrier {
         operation.memoryUris?.includes(input.memoryUri!)
         || input.selectivePlan && operation.payload?.includes(input.selectivePlan.selectedText));
       if (input.kind !== 'clear' && !operations.length && !input.selectivePlan) throw new Error('MEMORY_TARGET_NOT_FOUND');
-      const entries = new Set((input.kind === 'clear' || input.selectivePlan ? scoped : operations).flatMap(operation => [operation.source.entryId,
+      const entries = new Set((input.kind === 'clear' ? scoped : operations).flatMap(operation => [operation.source.entryId,
         ...(operation.collectionSources ?? []).map(source => source.entryId),
         ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]));
       const now = new Date().toISOString();
       for (const request of Object.values(state.collectionRequests ?? {})) {
         if (request.scope !== input.scope) continue;
-        if (input.kind === 'clear' || input.selectivePlan) for (const entryId of request.sourceEntries) entries.add(entryId);
+        if (input.kind === 'clear') for (const entryId of request.sourceEntries) entries.add(entryId);
         if (['running', 'settled'].includes(request.phase)
           && (input.kind === 'clear' || input.selectivePlan || request.sourceEntries.some(entryId => entries.has(entryId)))) {
           request.phase = 'discarded';

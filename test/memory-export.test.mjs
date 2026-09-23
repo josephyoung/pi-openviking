@@ -22,6 +22,7 @@ async function setup(t) {
     state.operations[project.id].phase = 'ready'; state.operations[project.id].memoryUris = [projectUri];
   });
   const transport = { owner, scope: null, async listMemoryDocuments() { return [ownUri, secondUri]; },
+    async memoryDocumentSize(uri) { return Buffer.byteLength(uri === ownUri ? 'own text' : 'untracked owned text'); },
     async readMemory(uri) { return uri === ownUri ? 'own text' : 'untracked owned text'; } };
   return { store, owner, transport, ownUri, secondUri, projectUri };
 }
@@ -31,7 +32,7 @@ test('export pages current scope with source metadata and no foreign project', a
   const exportService = new MemoryExportService(f.store, f.transport);
   const first = await exportService.page({ limit: 1 });
   assert.deepEqual(first.items, [{ uri: f.ownUri, content: 'own text', sources: [
-    { kind: 'explicit', sessionId: 'chat-one', entryId: 'entry-one', createdAt: first.items[0].sources[0].createdAt },
+    { kind: 'explicit', status: 'current', sessionId: 'chat-one', entryId: 'entry-one', createdAt: first.items[0].sources[0].createdAt },
   ], revisions: [] }]);
   assert(first.nextCursor);
   const second = await exportService.page({ limit: 1, cursor: first.nextCursor });
@@ -62,4 +63,21 @@ test('pending governance suppresses export, including paused management', async 
   assert.equal((await exportService.page({ limit: 10 })).items.length, 2);
   await new MemoryGovernanceBarrier(f.store).begin({ kind: 'clear', scope: null });
   await assert.rejects(exportService.page({ limit: 10 }), /MEMORY_GOVERNANCE_PENDING/);
+});
+
+test('export enforces byte budgets before reading and returns a cursor for the next fitting document', async t => {
+  const f = await setup(t);
+  const reads = [];
+  const transport = { ...f.transport,
+    async readMemory(uri) { reads.push(uri); return f.transport.readMemory(uri); } };
+  const service = new MemoryExportService(f.store, transport, 100, 100);
+  const first = await service.page({ limit: 2, maxBytes: 10 });
+  assert.deepEqual(first.items.map(item => item.uri), [f.ownUri]);
+  assert(first.nextCursor);
+  assert.deepEqual(reads, [f.ownUri]);
+  await assert.rejects(service.page({ limit: 1, cursor: first.nextCursor, maxBytes: 10 }), /MEMORY_EXPORT_TOO_LARGE/);
+  assert.deepEqual(reads, [f.ownUri]);
+  await assert.rejects(new MemoryExportService(f.store, { ...f.transport,
+    async memoryDocumentSize() { return 1; }, async readMemory() { return 'x'.repeat(101); } }, 100, 100)
+    .page({ limit: 1 }), /MEMORY_EXPORT_TOO_LARGE/);
 });

@@ -348,7 +348,15 @@ export class MemoryDelivery {
   }
 
   /** Advances at most one remote mutation. The caller owns scheduling/lifetime. */
-  async advance(id: string): Promise<void> {
+  async advance(id: string): Promise<void> { return this.#advance(id); }
+
+  /** Only a trusted coordinator can drain a pre-barrier writer while recall stays suppressed. */
+  async advanceGovernance(id: string, jobId: string): Promise<void> {
+    if (typeof jobId !== 'string' || !/^[a-f0-9-]{36}$/.test(jobId)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+    return this.#advance(id, jobId);
+  }
+
+  async #advance(id: string, jobId?: string): Promise<void> {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('INVALID_MEMORY_OPERATION');
     const operation = await this.#store.transact(state => {
       blockRevokedOperations(state);
@@ -356,7 +364,11 @@ export class MemoryDelivery {
       if (!current || terminal.has(current.phase)) return null;
       // Hold unrelated writes while old accepted mutations drain. Their body
       // and queue record survive; read-only reconciliation remains available.
-      if (governanceHoldsDelivery(state, current)) return null;
+      if (governanceHoldsDelivery(state, current)) {
+        const job = jobId && state.governance?.jobs[jobId];
+        if (!job || job.kind === 'clear' || job.phase !== 'draining' || job.scope !== current.scope
+          || !job.writerOperationIds.includes(id)) return null;
+      }
       if (unsent.has(current.phase) && !maySend(state, current)) {
         current.phase = 'blocked_by_pause';
         delete current.payload;

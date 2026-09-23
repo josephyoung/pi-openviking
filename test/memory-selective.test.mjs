@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { FileStateStore, MemoryDelivery, MemorySelectiveService } from '../dist/host.js';
+import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService } from '../dist/host.js';
 
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-selective-'));
@@ -27,12 +27,21 @@ async function setup(t) {
     async writerSettled() { return settled; },
     async removeSource(operation) { removedSources.push(operation.id); },
     async listMemoryDocuments() { return [...docs.keys()].sort(); },
+    async memoryDocumentSize(target) { return Buffer.byteLength(docs.get(target)); },
     async readMemory(target) { if (!docs.has(target)) throw new Error('missing'); return docs.get(target); },
     async replaceMemory(target, content) { docs.set(target, content); if (failAfterReplace) { failAfterReplace = false; throw new Error('lost reply'); } },
     async removeMemory(target) { docs.delete(target); },
   };
+  const drainWriter = async operationId => {
+    await store.transact(state => {
+      const operation = state.operations[operationId];
+      if (operation.phase === 'queued') {
+        operation.phase = 'ready'; operation.memoryUris = [uri]; delete operation.payload;
+      }
+    });
+  };
   return { owner, directory, store, delivery, docs, old, unrelated, uri, extra, target, other, removedSources,
-    transport, selective: new MemorySelectiveService(store, transport),
+    transport, selective: new MemorySelectiveService(store, transport, drainWriter), drainWriter,
     setSettled(value) { settled = value; }, setFailAfterReplace() { failAfterReplace = true; } };
 }
 
@@ -53,7 +62,13 @@ test('correction drains old writers, preserves unrelated text, blocks old forks 
   const state = await f.store.read();
   assert.equal(state.governance.jobs[job.id].selectivePlan, undefined);
   assert.equal(state.operations[f.target.id].payload, undefined);
-  assert.equal(state.operations[f.other.id].phase, 'blocked');
+  assert.deepEqual(state.operations[f.target.id].memoryUris, [f.uri]);
+  const exported = await new MemoryExportService(f.store, f.transport).page({ limit: 10 });
+  const shared = exported.items.find(item => item.uri === f.uri);
+  assert.equal(shared.sources[0].status, 'revoked');
+  assert(shared.sources.some(source => source.status === 'current' && source.entryId === 'unrelated'));
+  assert.equal(shared.revisions[0].kind, 'correct');
+  assert.equal(state.operations[f.other.id].phase, 'ready');
   assert.equal(state.operations[f.other.id].payload, undefined);
   assert.equal((await f.delivery.save({ ...f.target.source, sessionId: 'fork' }, f.old)).errorCode, 'MEMORY_SOURCE_REVOKED');
   assert.equal((await f.delivery.save({ ...f.target.source, entryId: 'fresh', branchId: 'fresh' }, f.old)).phase, 'queued');
@@ -78,8 +93,40 @@ test('ambiguous or foreign targets reject before registration or mutation', asyn
   f.docs.set(f.extra, f.old);
   await assert.rejects(f.selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old }), /MEMORY_TARGET_AMBIGUOUS/);
   await assert.rejects(f.selective.begin({ kind: 'correct', memoryUri: 'viking://user/bob/memories/private.md',
-    selectedText: f.old, replacementText: 'new' }), /INVALID_MEMORY_REFERENCE/);
+    selectedText: f.old, replacementText: 'new' }), /MEMORY_SCOPE_MISMATCH/);
   assert.equal((await f.store.read()).governance, undefined);
   assert.throws(() => new MemorySelectiveService(f.store, { ...f.transport,
     owner: { accountId: 'account', userId: 'bob' } }), /OWNER_MISMATCH/);
+});
+
+test('only the registered coordinator can drain an unrelated queued writer under the barrier', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-memory-drain-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const owner = { accountId: 'account', userId: 'alice' };
+  const uri = 'viking://user/alice/memories/fact.md';
+  const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
+  const delivery = new MemoryDelivery({ store, maxPayloadBytes: 8192, transport: { owner,
+    async createSession() {}, async sessionExists() { return true; },
+    async append() {}, async hasSource() { return true; },
+    async commit() { return { taskId: 'task' }; }, async findCommit() { return { taskId: 'task' }; },
+    async inspect() { return { status: 'ready', archiveId: 'archive', memoryUris: [uri] }; },
+  } });
+  await delivery.enable('v1');
+  const source = entryId => ({ sessionId: 'chat', entryId, branchId: entryId, contentVersion: 'v1' });
+  const target = await delivery.save(source('target'), '- old');
+  await store.transact(state => { state.operations[target.id].phase = 'ready'; state.operations[target.id].memoryUris = [uri]; });
+  const other = await delivery.save(source('other'), '- unrelated');
+  const selective = new MemorySelectiveService(store, { owner, scope: null,
+    async listMemoryDocuments() { return [uri]; }, async readMemory() { return '- old'; },
+    async writerSettled() { return true; }, async removeSource() {},
+    async replaceMemory() {}, async removeMemory() {},
+  });
+  const job = await selective.begin({ kind: 'forget', memoryUri: uri, selectedText: '- old' });
+  assert.equal((await store.read()).operations[other.id].payload, '- unrelated');
+  await delivery.advance(other.id);
+  assert.equal((await store.read()).operations[other.id].phase, 'queued');
+  await delivery.advanceGovernance(other.id, '00000000-0000-0000-0000-000000000000');
+  assert.equal((await store.read()).operations[other.id].phase, 'queued');
+  for (let step = 0; step < 5; step++) await delivery.advanceGovernance(other.id, job.id);
+  assert.equal((await store.read()).operations[other.id].phase, 'ready');
 });

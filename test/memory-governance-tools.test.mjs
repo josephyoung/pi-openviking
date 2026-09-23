@@ -60,12 +60,12 @@ test('owner scheduler recovers a pending clear without an open viewer', async t 
     async listMemoryDocuments() { return []; }, async readMemory() { throw new Error('unused'); },
     async replaceMemory() { throw new Error('unused'); }, async removeMemory() { throw new Error('unused'); },
   };
-  const service = new MemoryGovernanceService(store, client);
+  const service = new MemoryGovernanceService(store, client, delivery);
   const receipt = await service.clear();
   assert.equal(receipt.status, 'pending');
   assert.equal((await service.status(receipt.jobId)).status, 'pending');
   settled = true;
-  const reopened = new MemoryGovernanceService(new FileStateStore({ owner, directory, policyVersion: 'v1' }), client);
+  const reopened = new MemoryGovernanceService(new FileStateStore({ owner, directory, policyVersion: 'v1' }), client, delivery);
   const scheduler = new MemoryGovernanceScheduler(reopened, 10);
   scheduler.start();
   try {

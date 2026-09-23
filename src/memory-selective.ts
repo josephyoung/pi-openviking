@@ -1,6 +1,7 @@
 import { MemoryGovernanceBarrier } from './governance.js';
 import { sameOwner, checkedOwner, type GovernanceJob, type Owner, type Operation } from './types.js';
 import type { GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
+import { checkedScope, checkedMemoryDocumentUri } from './memory-reference.js';
 
 export interface SelectiveTransport {
   readonly owner: Owner;
@@ -19,21 +20,15 @@ function occurrences(text: string, selected: string): number {
 
 /** Exact-text governance for an unambiguously selected document. */
 export class MemorySelectiveService {
-  readonly #root: string;
-  constructor(private readonly store: GovernanceStateStore, private readonly transport: SelectiveTransport) {
+  constructor(private readonly store: GovernanceStateStore, private readonly transport: SelectiveTransport,
+    private readonly drainWriter?: (operationId: string, jobId: string) => Promise<void>) {
     checkedOwner(store.owner);
     if (!sameOwner(store.owner, transport.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
-    if (transport.scope !== null && (typeof transport.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(transport.scope))) {
-      throw new Error('INVALID_MEMORY_SCOPE');
-    }
-    this.#root = `viking://user/${store.owner.userId}/${transport.scope === null ? '' : `peers/${transport.scope}/`}memories/`;
+    checkedScope(transport.scope);
   }
 
   #document(uri: unknown): string {
-    if (typeof uri !== 'string' || !uri.startsWith(this.#root) || /[%?#\\\x00-\x1f]/.test(uri)
-      || !uri.endsWith('.md') || uri.slice(this.#root.length).split('/').some(segment => !segment
-        || segment === '.' || segment === '..' || segment.startsWith('.'))) throw new Error('INVALID_MEMORY_REFERENCE');
-    return uri;
+    return checkedMemoryDocumentUri(this.store.owner, this.transport.scope, uri);
   }
 
   async #documents(): Promise<string[]> {
@@ -84,7 +79,15 @@ export class MemorySelectiveService {
             if (!operation || !sameOwner(operation.owner, this.transport.owner) || operation.scope !== job.scope) {
               throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
             }
-            if (!await this.transport.writerSettled(operation)) return { status: 'pending' };
+            if (!['ready', 'failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)) {
+              if (!this.drainWriter) return { status: 'pending' };
+              await this.drainWriter(operationId, id);
+              state = await this.store.read(signal);
+              if (!['ready', 'failed', 'blocked', 'blocked_by_pause'].includes(state.operations[operationId].phase)) {
+                return { status: 'pending' };
+              }
+            }
+            if (!await this.transport.writerSettled(state.operations[operationId])) return { status: 'pending' };
           }
           await this.store.transact(current => {
             const live = current.governance!.jobs[id];
@@ -124,7 +127,9 @@ export class MemorySelectiveService {
           for (const operationId of live.operationIds) {
             const operation = current.operations[operationId];
             operation.phase = 'blocked'; operation.errorCode = 'MEMORY_SOURCE_REVOKED';
-            delete operation.payload; delete operation.memoryUris;
+            // Keep the URI lineage for surviving shared documents and export.
+            // The old source is marked revoked and its plaintext is erased.
+            delete operation.payload;
             operation.updatedAt = new Date().toISOString();
           }
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
