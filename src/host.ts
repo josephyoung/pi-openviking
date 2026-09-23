@@ -263,7 +263,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
         const work = async () => {
           await options.assertToolIsolation();
           const state = await options.stateStore.read();
-          if (!state.authorization.enabled || governancePending(state, options.scope ?? null)) { cached = undefined; return ''; }
+          if (state.retirement || !state.authorization.enabled || governancePending(state, options.scope ?? null)) { cached = undefined; return ''; }
           if (cached?.revision === state.revision && cached.modelKey === modelKey) {
             return keyFor(ctx.model) === modelKey ? cached.text : '';
           }
@@ -282,7 +282,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           signal.throwIfAborted();
           // Pause or governance changes during retrieval invalidate the result.
           const latest = await options.stateStore.read();
-          if (!latest.authorization.enabled || latest.revision !== state.revision || query !== currentQuery
+          if (latest.retirement || !latest.authorization.enabled || latest.revision !== state.revision || query !== currentQuery
             || keyFor(ctx.model) !== modelKey) return '';
           signal.throwIfAborted();
           const text = selected.length ? render() : '';

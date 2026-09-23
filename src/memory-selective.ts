@@ -168,6 +168,23 @@ export class MemorySelectiveService {
             }
             if (!await this.transport.writerSettled(state.operations[operationId])) return { status: 'pending' };
           }
+          // A failed remote extraction may leave an unreported partial write.
+          // Without a URI lineage, selective cleanup cannot prove that a
+          // semantically matching derivative is gone. Keep suppression active
+          // until the owner confirms whole-scope clear.
+          state = await this.store.read(signal);
+          job = state.governance!.jobs[id];
+          if (job.operationIds.some(operationId => {
+            const operation = state.operations[operationId];
+            return operation.phase === 'failed' && operation.errorCode === 'MEMORY_EXTRACTION_FAILED'
+              && !operation.memoryUris?.length;
+          })) {
+            await this.store.transact(current => {
+              const live = current.governance?.jobs[id];
+              if (live?.phase === 'draining') live.errorCode = 'MEMORY_GOVERNANCE_CLEAR_REQUIRED';
+            }, signal);
+            return { status: 'pending', errorCode: 'MEMORY_GOVERNANCE_CLEAR_REQUIRED' };
+          }
           await this.store.transact(current => {
             const live = current.governance!.jobs[id];
             if (live.phase !== 'draining') throw new Error('MEMORY_GOVERNANCE_CONFLICT');

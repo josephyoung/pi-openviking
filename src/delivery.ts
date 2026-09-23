@@ -98,6 +98,7 @@ export class MemoryDelivery {
   async enable(policyVersion: string, boundaries: CollectionBoundary[] = []): Promise<void> {
     validateBoundary(policyVersion, boundaries);
     await this.#store.transact(state => {
+      if (state.retirement) throw new Error('MEMORY_RETIRED');
       const previous = state.authorization;
       const effectiveAt = new Date().toISOString();
       state.authorization = { ...previous, enabled: true,

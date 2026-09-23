@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createOpenVikingExtension, FileStateStore, MemoryDelivery,
-  MemoryGovernanceService, MemoryGovernanceScheduler } from '../dist/host.js';
+  MemoryGovernanceBarrier, MemoryGovernanceService, MemoryGovernanceScheduler } from '../dist/host.js';
 
 test('model and management tools use host governance; clear requires real UI confirmation', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-governance-tools-'));
@@ -76,4 +76,64 @@ test('owner scheduler recovers a pending clear without an open viewer', async t 
     assert.equal((await reopened.status(receipt.jobId)).status, 'complete');
     assert.equal(clears, 1);
   } finally { await scheduler.stop(); }
+});
+
+test('confirmed scope clear supersedes a stuck selective edit without releasing the barrier', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-memory-clear-supersede-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const owner = { accountId: 'account', userId: 'alice' };
+  const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
+  const delivery = new MemoryDelivery({ store, transport: { owner }, maxPayloadBytes: 8192 });
+  await delivery.enable('v1');
+  const uri = 'viking://user/alice/memories/old.md';
+  const selective = await new MemoryGovernanceBarrier(store).begin({ kind: 'forget', scope: null,
+    memoryUri: uri, selectivePlan: { memoryUri: uri, selectedText: 'old fact', replacementText: '' } });
+  let clears = 0;
+  const client = { owner, scope: null, async writerSettled() { return true; }, async removeSource() {},
+    async clearMemoryScope() { clears++; }, async listMemoryDocuments() { return []; },
+    async readMemory() { throw new Error('unused'); }, async replaceMemory() {}, async removeMemory() {} };
+  const service = new MemoryGovernanceService(store, client, delivery);
+  const receipt = await service.clear();
+  assert.equal(receipt.status, 'complete');
+  assert.notEqual(receipt.jobId, selective.id);
+  const state = await store.read();
+  assert.equal(state.governance.jobs[selective.id].phase, 'complete');
+  assert.equal(state.governance.jobs[selective.id].selectivePlan, undefined);
+  assert.equal(state.governance.jobs[receipt.jobId].phase, 'complete');
+  assert.equal(clears, 1);
+});
+
+test('retirement fences new access and retains a recoverable clear until remote success', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-memory-retirement-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const owner = { accountId: 'account', userId: 'alice' };
+  const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
+  const delivery = new MemoryDelivery({ store, transport: { owner }, maxPayloadBytes: 8192 });
+  await delivery.enable('v1');
+  const operation = await delivery.save({ sessionId: 'chat', entryId: 'old', branchId: 'old', contentVersion: 'v1' }, 'old fact');
+  const selective = await new MemoryGovernanceBarrier(store).begin({ kind: 'forget', scope: null,
+    memoryUri: 'viking://user/alice/memories/old.md',
+    selectivePlan: { memoryUri: 'viking://user/alice/memories/old.md', selectedText: 'old fact', replacementText: '' } });
+  let available = false;
+  const client = { owner, scope: null, async writerSettled() { return true; },
+    async removeSource() {}, async clearMemoryScope() { if (!available) throw new Error('REMOTE_UNAVAILABLE'); },
+    async listMemoryDocuments() { return []; }, async readMemory() { throw new Error('unused'); },
+    async replaceMemory() {}, async removeMemory() {},
+  };
+  const service = new MemoryGovernanceService(store, client, delivery);
+  const first = await service.retire();
+  assert.equal(first.status, 'pending');
+  assert.equal((await store.read()).retirement.phase, 'requested');
+  assert.equal((await store.read()).governance.jobs[selective.id].phase, 'complete');
+  assert.equal((await store.read()).governance.jobs[selective.id].selectivePlan, undefined);
+  await assert.rejects(delivery.enable('v1'), /MEMORY_RETIRED/);
+  available = true;
+  const resumed = new MemoryGovernanceService(new FileStateStore({ owner, directory, policyVersion: 'v1' }), client, delivery);
+  const last = await resumed.retire();
+  assert.equal(last.status, 'complete');
+  const state = await store.read();
+  assert.equal(state.retirement.phase, 'remote_cleared');
+  assert.equal(state.retirement.clearJobId, first.jobId);
+  assert.equal(state.operations[operation.id].payload, undefined);
+  assert.equal((await resumed.retire()).status, 'complete');
 });

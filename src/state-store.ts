@@ -33,6 +33,16 @@ function verify(state: OwnerState, owner: Owner): void {
       || !state.operations || Array.isArray(state.operations)) {
     throw new Error('INVALID_MEMORY_STATE');
   }
+  if (state.retirement !== undefined && (!state.retirement
+    || !['requested', 'remote_cleared'].includes(state.retirement.phase)
+    || !Number.isFinite(Date.parse(state.retirement.requestedAt))
+    || state.authorization.enabled || state.authorization.automaticCollection
+    || (state.retirement.clearJobId !== undefined && (!/^[a-f0-9-]{36}$/.test(state.retirement.clearJobId)
+      || state.governance?.jobs[state.retirement.clearJobId]?.kind !== 'clear'
+      || state.retirement.phase === 'remote_cleared'
+        && state.governance?.jobs[state.retirement.clearJobId]?.phase !== 'complete')))) {
+    throw new Error('INVALID_MEMORY_RETIREMENT');
+  }
   if (state.governance !== undefined) {
     const governance = state.governance;
     if (!governance || !Number.isSafeInteger(governance.revision) || governance.revision < 1

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService,
+import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryGovernanceService, MemoryExportService,
   MemoryGovernanceBarrier, CollectionLifecycle } from '../dist/host.js';
 
 async function setup(t) {
@@ -220,6 +220,29 @@ test('an accepted paraphrase in a separate exclusive document is removed before 
   assert.equal((await f.store.read()).operations[paraphrase.id].phase, 'blocked');
 });
 
+test('failed target extraction without URI lineage requires confirmed scope clear', async t => {
+  const f = await setup(t);
+  const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'failed-paraphrase',
+    branchId: 'failed-paraphrase', contentVersion: 'v1' }, 'I enjoy jasmine tea');
+  await f.store.transact(state => { state.operations[paraphrase.id].phase = 'processing'; });
+  const drain = async operationId => {
+    if (operationId === paraphrase.id) {
+      await f.store.transact(state => {
+        state.operations[operationId].phase = 'failed';
+        state.operations[operationId].errorCode = 'MEMORY_EXTRACTION_FAILED';
+      });
+    } else await f.drainWriter(operationId);
+  };
+  const selective = new MemorySelectiveService(f.store, f.transport, drain,
+    async ({ candidateText }) => candidateText.includes('jasmine') ? 'target' : 'unrelated');
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(await selective.advance(job.id), {
+    status: 'pending', errorCode: 'MEMORY_GOVERNANCE_CLEAR_REQUIRED',
+  });
+  assert.equal((await f.store.read()).governance.jobs[job.id].phase, 'draining');
+  assert(f.docs.get(f.uri).includes(f.old));
+});
+
 test('an accepted paraphrase merged into the selected document stays pending for review', async t => {
   const f = await setup(t);
   const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'merged-paraphrase',
@@ -243,8 +266,15 @@ test('an accepted paraphrase merged into the selected document stays pending for
   assert.equal(state.governance.jobs[job.id].phase, 'applying');
   assert.equal(state.operations[paraphrase.id].phase, 'ready');
   assert.equal(state.operations[paraphrase.id].payload, 'I enjoy jasmine tea');
-  await selective.resolveMergedWriter(job.id, paraphrase.id, 'User prefers jasmine tea');
-  assert.equal((await selective.advance(job.id)).status, 'complete');
+  const management = new MemoryGovernanceService(f.store, f.transport, f.delivery);
+  assert.equal((await management.pending()).jobId, job.id);
+  const review = await management.review(job.id);
+  assert.equal(review.stage, 'merged');
+  assert.deepEqual(review.candidates.map(item => item.operationId), [paraphrase.id]);
+  assert(review.candidates[0].documentText.includes('User prefers jasmine tea'));
+  assert.equal((await management.resolveMergedWriter(job.id, paraphrase.id,
+    'User prefers jasmine tea')).status, 'complete');
+  assert.equal(await management.pending(), undefined);
   assert.equal(f.docs.get(f.uri), `\n${f.unrelated}\n`);
   const completed = await f.store.read();
   assert.equal(completed.operations[paraphrase.id].payload, undefined);

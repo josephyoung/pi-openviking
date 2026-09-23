@@ -133,6 +133,8 @@ export interface OwnerState {
   owner: Owner;
   revision: number;
   authorization: Authorization;
+  /** Durable account retirement fence; only removed after remote clear and host cleanup. */
+  retirement?: { phase: 'requested' | 'remote_cleared'; requestedAt: string; clearJobId?: string };
   operations: Record<string, Operation>;
   governance?: { revision: number; jobs: Record<string, GovernanceJob> };
   /** Source receipts contain no conversation text and survive consent changes. */

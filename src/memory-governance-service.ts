@@ -34,8 +34,65 @@ export class MemoryGovernanceService {
     return this.#receipt(job, await this.#selective.advance(job.id));
   }
   async clear(): Promise<GovernanceReceipt> {
-    const job = await new MemoryGovernanceBarrier(this.store).begin({ kind: 'clear', scope: this.client.scope });
+    const job = await this.store.withGovernanceLock(() =>
+      new MemoryGovernanceBarrier(this.store).begin({ kind: 'clear', scope: this.client.scope,
+        supersedePending: true }));
     return this.#receipt(job, await this.#clear.advance(job.id));
+  }
+  /** Persist access revocation before any remote operation. The host retains
+   * its cleanup credential and state until this returns complete. */
+  async retire(): Promise<GovernanceReceipt> {
+    await this.store.transact(state => {
+      if (!state.retirement) state.retirement = { phase: 'requested', requestedAt: new Date().toISOString() };
+      state.authorization.enabled = false;
+      state.authorization.automaticCollection = false;
+      state.authorization.epoch++;
+      state.authorization.effectiveAt = new Date().toISOString();
+      // Retirement supersedes selective edits: the whole owner scope will be
+      // cleared, and the durable retirement fence already blocks all reads.
+      for (const job of Object.values(state.governance?.jobs ?? {})) {
+        if (job.scope !== this.client.scope || job.kind === 'clear' || job.phase === 'complete') continue;
+        job.phase = 'complete'; job.completedAt = new Date().toISOString();
+        delete job.selectivePlan; delete job.mergedResolutions; delete job.errorCode;
+      }
+    });
+    let state = await this.store.read();
+    if (state.retirement?.phase === 'remote_cleared') {
+      return { jobId: state.retirement.clearJobId!, status: 'complete' };
+    }
+    let pending = await this.pending();
+    if (pending) {
+      pending = await this.advancePending();
+      if (pending?.status === 'pending') return pending;
+      if (pending && (await this.store.read()).governance?.jobs[pending.jobId]?.kind === 'clear') {
+        await this.store.transact(current => {
+          if (current.retirement?.phase === 'requested' && !current.retirement.clearJobId) {
+            current.retirement.clearJobId = pending!.jobId;
+          }
+        });
+      }
+    }
+    state = await this.store.read();
+    let clearJob = state.retirement?.clearJobId
+      ? state.governance?.jobs[state.retirement.clearJobId] : undefined;
+    if (!clearJob) {
+      const result = await this.clear();
+      await this.store.transact(current => {
+        if (current.retirement?.phase === 'requested' && !current.retirement.clearJobId) {
+          current.retirement.clearJobId = result.jobId;
+        }
+      });
+      if (result.status === 'pending') return result;
+      state = await this.store.read();
+      clearJob = state.governance?.jobs[result.jobId];
+    }
+    if (!clearJob || clearJob.kind !== 'clear' || clearJob.phase !== 'complete') {
+      return { jobId: state.retirement!.clearJobId!, status: 'pending' };
+    }
+    await this.store.transact(current => {
+      if (current.retirement?.clearJobId === clearJob!.id) current.retirement.phase = 'remote_cleared';
+    });
+    return { jobId: clearJob.id, status: 'complete' };
   }
   exportPage(limit: number, cursor?: string, maxBytes?: number) { return this.#export.page({ limit, cursor, maxBytes }); }
 
@@ -45,6 +102,13 @@ export class MemoryGovernanceService {
     if (!job || job.scope !== this.client.scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
     return { jobId: id, status: job.phase === 'complete' ? 'complete' : 'pending',
       ...(job.errorCode ? { errorCode: job.errorCode } : {}) };
+  }
+
+  async pending(): Promise<GovernanceReceipt | undefined> {
+    const job = Object.values((await this.store.read()).governance?.jobs ?? {}).find(job =>
+      job.scope === this.client.scope && job.phase !== 'complete');
+    return job ? { jobId: job.id, status: 'pending',
+      ...(job.errorCode ? { errorCode: job.errorCode } : {}) } : undefined;
   }
 
   /** Authenticated management clarification; owner and project come from this service. */
@@ -90,6 +154,16 @@ export class MemoryGovernanceService {
       candidateText: governanceCandidateText(state.operations[operationId].payload ?? ''), documentText }));
   }
 
+  async review(jobId: string) {
+    const job = (await this.store.read()).governance?.jobs[jobId];
+    if (!job || job.scope !== this.client.scope || job.phase === 'complete') {
+      throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+    }
+    return job.phase === 'draining'
+      ? { stage: 'classify' as const, candidates: await this.reviewCandidates(jobId) }
+      : { stage: 'merged' as const, candidates: await this.reviewMergedCandidates(jobId) };
+  }
+
   async resolveMergedWriter(jobId: string, operationId: string, exactText: string): Promise<GovernanceReceipt> {
     const job = (await this.store.read()).governance?.jobs[jobId];
     if (!job || job.scope !== this.client.scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
@@ -123,7 +197,7 @@ export class MemoryGovernanceScheduler {
     private readonly onError?: (code: 'MEMORY_GOVERNANCE_SCHEDULER_UNAVAILABLE') => void) {
     if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs <= 0) throw new Error('INVALID_MEMORY_SCHEDULER_POLICY');
   }
-  start(): void { if (this.#active) return; this.#active = true; this.wake(); }
+  start(): void { if (this.#active) return; this.#active = true; this.#schedule(this.pollIntervalMs); }
   wake(): void {
     if (!this.#active) return;
     if (this.#running) { this.#wakeRequested = true; return; }

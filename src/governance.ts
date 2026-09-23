@@ -64,10 +64,11 @@ export class MemoryGovernanceBarrier {
   constructor(private readonly store: StateStore) {}
 
   async begin(input: { kind: GovernanceJob['kind']; scope: string | null; memoryUri?: string;
-    selectivePlan?: GovernanceJob['selectivePlan'] }): Promise<GovernanceJob> {
+    selectivePlan?: GovernanceJob['selectivePlan']; supersedePending?: boolean }): Promise<GovernanceJob> {
     if (!input || !['forget', 'correct', 'clear'].includes(input.kind)
       || (input.scope !== null && (typeof input.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.scope)))
       || (input.kind === 'clear' ? input.memoryUri !== undefined || input.selectivePlan !== undefined : typeof input.memoryUri !== 'string')
+      || (input.supersedePending !== undefined && (input.kind !== 'clear' || input.supersedePending !== true))
       || (input.selectivePlan !== undefined && (input.kind === 'clear'
         || input.selectivePlan.memoryUri !== input.memoryUri
         || typeof input.selectivePlan.selectedText !== 'string' || !input.selectivePlan.selectedText.trim()
@@ -82,7 +83,14 @@ export class MemoryGovernanceBarrier {
     input = structuredClone(input);
     return this.store.transact(state => {
       if (input.kind === 'correct' && !state.authorization.enabled) throw new Error('MEMORY_DISABLED');
-      if (governancePending(state, input.scope)) throw new Error('MEMORY_GOVERNANCE_PENDING');
+      const pending = Object.values(state.governance?.jobs ?? {}).find(job =>
+        job.scope === input.scope && job.phase !== 'complete');
+      if (pending) {
+        if (!input.supersedePending) throw new Error('MEMORY_GOVERNANCE_PENDING');
+        if (pending.kind === 'clear') return structuredClone(pending);
+        pending.phase = 'complete'; pending.completedAt = new Date().toISOString();
+        delete pending.selectivePlan; delete pending.mergedResolutions; delete pending.errorCode;
+      }
       const scoped = Object.values(state.operations).filter(operation => operation.scope === input.scope);
       const matchingUri = input.kind === 'clear' ? [] : scoped.filter(operation => operation.memoryUris?.includes(input.memoryUri!));
       const exactSources = input.selectivePlan ? matchingUri.filter(operation =>
