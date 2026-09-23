@@ -220,6 +220,31 @@ test('an accepted paraphrase in a separate exclusive document is removed before 
   assert.equal((await f.store.read()).operations[paraphrase.id].phase, 'blocked');
 });
 
+test('an accepted paraphrase merged into the selected document stays pending for review', async t => {
+  const f = await setup(t);
+  const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'merged-paraphrase',
+    branchId: 'merged-paraphrase', contentVersion: 'v1' }, 'I enjoy jasmine tea');
+  await f.store.transact(state => { state.operations[paraphrase.id].phase = 'processing'; });
+  const drain = async operationId => {
+    if (operationId === paraphrase.id) {
+      f.docs.set(f.uri, `${f.docs.get(f.uri)}\nUser prefers jasmine tea`);
+      await f.store.transact(state => {
+        state.operations[operationId].phase = 'ready'; state.operations[operationId].memoryUris = [f.uri];
+      });
+    } else await f.drainWriter(operationId);
+  };
+  const selective = new MemorySelectiveService(f.store, f.transport, drain,
+    async ({ candidateText }) => candidateText.includes('jasmine') ? 'target' : 'unrelated');
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(await selective.advance(job.id), {
+    status: 'pending', errorCode: 'MEMORY_GOVERNANCE_REVIEW_REQUIRED',
+  });
+  const state = await f.store.read();
+  assert.equal(state.governance.jobs[job.id].phase, 'applying');
+  assert.equal(state.operations[paraphrase.id].phase, 'ready');
+  assert.equal(state.operations[paraphrase.id].payload, 'I enjoy jasmine tea');
+});
+
 test('forgetting one of two facts from the same source keeps the other source current', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-fact-split-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

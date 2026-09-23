@@ -152,6 +152,13 @@ export class MemorySelectiveService {
         const documents = new Set(await this.#documents());
         const targetIds = job.operationIds;
         const scope = job.scope;
+        const writerClassifications = job.writerClassifications ?? {};
+        // A second accepted source can merge a paraphrase into the selected
+        // document. Exact-text replacement cannot prove that paraphrase gone.
+        if (targetIds.some(operationId => writerClassifications[operationId] === 'target'
+          && state.operations[operationId].memoryUris?.includes(plan.memoryUri))) {
+          throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+        }
         for (const uri of new Set(targetIds.flatMap(operationId => state.operations[operationId].memoryUris ?? []))) {
           if (uri === plan.memoryUri || !documents.has(uri)) continue;
           const content = await this.transport.readMemory(uri);
