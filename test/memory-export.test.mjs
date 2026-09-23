@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { FileStateStore, MemoryDelivery, MemoryGovernanceBarrier, MemoryExportService } from '../dist/host.js';
+import { explicitSaveSource } from '../dist/explicit-save-source.js';
 
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-export-'));
@@ -43,6 +44,32 @@ test('export pages current scope with source metadata and no foreign project', a
   const second = await exportService.page({ limit: 1, cursor: first.nextCursor });
   assert.deepEqual(second, { items: [{ uri: f.secondUri, content: 'untracked owned text', sources: [], revisions: [] }], nextCursor: undefined });
   assert(!JSON.stringify([first, second]).includes(f.projectUri));
+});
+
+test('export accepts the source ID generated for an explicit Pi save', async t => {
+  const f = await setup(t);
+  const source = explicitSaveSource('chat-two', { id: 'entry-two', timestamp: new Date().toISOString(),
+    message: { role: 'user', content: 'synthetic' } }, 'synthetic fact');
+  const delivery = new MemoryDelivery({ store: f.store, transport: { owner: f.owner }, maxPayloadBytes: 8192 });
+  const operation = await delivery.save(source, 'synthetic fact');
+  await f.store.transact(state => {
+    state.operations[operation.id].phase = 'ready';
+    state.operations[operation.id].memoryUris = [f.ownUri];
+  });
+  const page = await new MemoryExportService(f.store, f.transport).page({ limit: 1 });
+  assert(page.items[0].sources.some(item => item.entryId === source.entryId));
+});
+
+test('export still rejects malformed source IDs', async t => {
+  const f = await setup(t);
+  const delivery = new MemoryDelivery({ store: f.store, transport: { owner: f.owner }, maxPayloadBytes: 8192 });
+  const operation = await delivery.save({ sessionId: 'chat-two', entryId: 'bad:source',
+    branchId: 'entry-two', contentVersion: 'v1' }, 'synthetic fact');
+  await f.store.transact(state => {
+    state.operations[operation.id].phase = 'ready';
+    state.operations[operation.id].memoryUris = [f.ownUri];
+  });
+  await assert.rejects(new MemoryExportService(f.store, f.transport).page({ limit: 1 }), /INVALID_MEMORY_SOURCE/);
 });
 
 test('export rejects owner, scope, malformed cursor, foreign URI, and changed state', async t => {

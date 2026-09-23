@@ -111,7 +111,12 @@ export class MemoryExportService {
         entryId: operation.source.entryId, createdAt: operation.createdAt,
       }));
       for (const source of sources) {
-        if (![source.sessionId, source.entryId].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id))
+        // Explicit saves use `<pi-entry-id>:<content-sha256>`; collection
+        // sources use the plain Pi entry ID. Both are created by this package.
+        if (typeof source.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(source.sessionId)
+          || typeof source.entryId !== 'string'
+          || !(/^[A-Za-z0-9_-]{1,128}$/.test(source.entryId)
+            || /^[A-Za-z0-9_-]{1,63}:[a-f0-9]{64}$/.test(source.entryId))
           || !Number.isFinite(Date.parse(source.createdAt))) throw new Error('INVALID_MEMORY_SOURCE');
       }
       const revisions = Object.values(start.governance?.jobs ?? {}).filter(job =>
