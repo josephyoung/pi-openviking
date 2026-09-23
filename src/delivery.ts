@@ -425,6 +425,26 @@ export class MemoryDelivery {
         case 'session_unknown':
           if (await this.#transport.sessionExists(operation.remoteSessionId)) {
             await this.#transition(id, 'session_unknown', { phase: 'session_created' });
+          } else {
+            const state = await this.#store.read();
+            const current = state.operations[id];
+            if (!current || current.phase !== 'session_unknown') break;
+            if (!maySend(state, current)) {
+              await this.#store.transact(live => {
+                const pending = live.operations[id];
+                if (pending?.phase === 'session_unknown' && !maySend(live, pending)) {
+                  pending.phase = 'blocked_by_pause';
+                  pending.updatedAt = new Date().toISOString();
+                  delete pending.payload;
+                }
+              });
+              break;
+            }
+            // Only the empty session creation is safe to retry: its stable ID
+            // prevents duplicate sessions. Message append and commit remain
+            // read-only reconciled after an unknown response.
+            await this.#transport.createSession(operation.remoteSessionId);
+            await this.#transition(id, 'session_unknown', { phase: 'session_created' });
           }
           break;
         case 'session_created':

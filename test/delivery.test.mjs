@@ -56,6 +56,41 @@ test('durable dedup and response-loss recovery use one mutation each across new 
   assert.equal(saved.payload, undefined);
 });
 
+test('a failed session creation retries the same ID after the remote service recovers', async t => {
+  const f = await setup(t);
+  let available = false;
+  const create = f.transport.createSession;
+  f.transport.createSession = async id => {
+    if (!available) throw new Error('synthetic service outage before session creation');
+    return create(id);
+  };
+  await f.service.enable('v1');
+  const operation = await f.service.save(source, 'fact');
+  await f.service.advance(operation.id);
+  assert.equal((await f.store.read()).operations[operation.id].phase, 'session_unknown');
+  assert.equal(f.remote.sessions.size, 0);
+  available = true;
+  f.remote.ready = true;
+  for (let i = 0; i < 5; i++) await f.recreate().service.advance(operation.id);
+  assert.equal((await f.store.read()).operations[operation.id].phase, 'ready');
+  assert.deepEqual(f.remote.mutations, ['create', 'append', 'commit']);
+});
+
+test('pause blocks an absent unknown session without creating it after reauthorization', async t => {
+  const f = await setup(t);
+  f.transport.createSession = async () => { throw new Error('synthetic service outage'); };
+  await f.service.enable('v1');
+  const operation = await f.service.save(source, 'fact');
+  await f.service.advance(operation.id);
+  await f.service.pause();
+  await f.service.enable('v2');
+  await f.recreate().service.advance(operation.id);
+  const current = (await f.store.read()).operations[operation.id];
+  assert.equal(current.phase, 'blocked_by_pause');
+  assert.equal(current.payload, undefined);
+  assert.deepEqual(f.remote.mutations, []);
+});
+
 test('concurrent processors never both send the same non-idempotent message', async t => {
   const f = await setup(t);
   await f.service.enable('v1');
