@@ -59,6 +59,10 @@ function verify(state: OwnerState, owner: Owner): void {
         || job.writerOperationIds.some(operationId => typeof operationId !== 'string'
           || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
         || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
+        || (job.collectionRequestIds !== undefined && (!Array.isArray(job.collectionRequestIds)
+          || job.kind === 'clear' || new Set(job.collectionRequestIds).size !== job.collectionRequestIds.length
+          || job.collectionRequestIds.some(requestId => typeof requestId !== 'string'
+            || !state.collectionRequests?.[requestId] || state.collectionRequests[requestId].scope !== job.scope)))
         || !Array.isArray(job.memoryUris) || new Set(job.memoryUris).size !== job.memoryUris.length
         || (job.kind !== 'clear' && job.memoryUris.length !== 1)) throw new Error('INVALID_MEMORY_GOVERNANCE');
       if (job.memoryUris.some(uri => !isMemoryDocumentUri(owner, job.scope, uri))) {

@@ -1,4 +1,4 @@
-import { governancePending, governanceHoldsDelivery, sourceRevoked, blockRevokedOperations } from './governance.js';
+import { governancePending, governanceHoldsDelivery, governanceCollectionJob, sourceRevoked, blockRevokedOperations } from './governance.js';
 import { isTaskFactProjection } from './task-facts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
@@ -186,11 +186,17 @@ export class MemoryDelivery {
         || selected.explicitOperationIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)))) {
         throw new Error('INVALID_COLLECTION_SELECTION');
       }
-      if (governancePending(state, first.scope)
+      const governance = governanceCollectionJob(state, first);
+      if (governancePending(state, first.scope) && !governance
         || selected.facts.some(fact => fact?.source && sourceRevoked(state, first.scope, fact.source.entryId)
           || fact?.evidence?.some(item => item?.source && sourceRevoked(state, first.scope, item.source.entryId)))) {
         return { status: 'blocked', errorCode: 'MEMORY_GOVERNANCE_PENDING' };
       }
+      // A selector started before the barrier may return afterward. Keep its
+      // unrelated facts, but never enqueue the exact fact being governed.
+      const selectedText = governance?.selectivePlan?.selectedText;
+      if (selectedText) selected.facts = selected.facts.filter(fact =>
+        typeof fact?.text !== 'string' || !fact.text.includes(selectedText) && !selectedText.includes(fact.text));
       const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
       const validSource = (source: CollectionSource) => isCollectionSource(source)
         && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
@@ -279,6 +285,7 @@ export class MemoryDelivery {
           collectionEvidence: evidence, createdAt: now, updatedAt: now, phase: 'queued',
           remoteSessionId: randomUUID(), payload };
         state.operations[id] = operation;
+        if (governance && !governance.writerOperationIds.includes(id)) governance.writerOperationIds.push(id);
         state.collectedSources ??= {};
         for (const [key, group] of pending) state.collectedSources[key] = { operationId: id, payloadDigest: group.payloadDigest };
         operationIds.add(id);

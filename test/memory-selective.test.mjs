@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService } from '../dist/host.js';
+import { createHash } from 'node:crypto';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { FileStateStore, MemoryDelivery, MemorySelectiveService, MemoryExportService, CollectionLifecycle } from '../dist/host.js';
 
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-selective-'));
@@ -29,6 +31,11 @@ async function setup(t) {
     async listMemoryDocuments() { return [...docs.keys()].sort(); },
     async memoryDocumentSize(target) { return Buffer.byteLength(docs.get(target)); },
     async readMemory(target) { if (!docs.has(target)) throw new Error('missing'); return docs.get(target); },
+    async readMemoryLimited(target, maxBytes) {
+      const content = await this.readMemory(target);
+      if (Buffer.byteLength(content) > maxBytes) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+      return content;
+    },
     async replaceMemory(target, content) { docs.set(target, content); if (failAfterReplace) { failAfterReplace = false; throw new Error('lost reply'); } },
     async removeMemory(target) { docs.delete(target); },
   };
@@ -129,4 +136,34 @@ test('only the registered coordinator can drain an unrelated queued writer under
   assert.equal((await store.read()).operations[other.id].phase, 'queued');
   for (let step = 0; step < 5; step++) await delivery.advanceGovernance(other.id, job.id);
   assert.equal((await store.read()).operations[other.id].phase, 'ready');
+});
+
+test('selective governance drains an unrelated pre-barrier collection and filters the old fact', async t => {
+  const f = await setup(t);
+  await f.delivery.authorizeCollection({ policyVersion: 'v1', scope: null, boundaries: [] });
+  const lifecycle = new CollectionLifecycle(f.store);
+  const session = SessionManager.inMemory('/private/tmp');
+  const requestId = await lifecycle.begin(session);
+  const text = `${f.old}\n${f.unrelated}`;
+  const entryId = session.appendMessage({ role: 'user', content: text, timestamp: Date.now() });
+  session.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Understood.' }], stopReason: 'stop', timestamp: Date.now() });
+  await lifecycle.settle(requestId, session);
+  const entry = session.getEntry(entryId);
+  const source = { sessionId: session.getSessionId(), entryId, entryTimestamp: entry.timestamp,
+    branchId: session.getLeafId(), contentVersion: createHash('sha256').update(JSON.stringify(entry.message)).digest('hex') };
+  const fact = value => ({ text: value, source, evidence: [{ source, quote: value }] });
+  const job = await f.selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(job.collectionRequestIds, [requestId]);
+  assert.equal((await f.selective.advance(job.id)).status, 'pending');
+  const receipt = await f.delivery.collectSelection({ status: 'ready', requestIds: [requestId],
+    facts: [fact(f.old), fact(f.unrelated)] });
+  assert.equal(receipt.status, 'recorded');
+  assert.equal(receipt.operationIds.length, 1);
+  const before = await f.store.read();
+  assert(before.operations[receipt.operationIds[0]].payload.includes(f.unrelated));
+  assert(!before.operations[receipt.operationIds[0]].payload.includes(f.old));
+  assert(before.governance.jobs[job.id].writerOperationIds.includes(receipt.operationIds[0]));
+  assert.equal((await f.selective.advance(job.id)).status, 'complete');
+  assert.equal((await f.store.read()).operations[receipt.operationIds[0]].phase, 'ready');
+  assert.equal(f.docs.get(f.uri), `\n${f.unrelated}`);
 });

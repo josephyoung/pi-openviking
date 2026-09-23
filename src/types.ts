@@ -109,6 +109,8 @@ export interface GovernanceJob {
   operationIds: string[];
   /** All pre-barrier scope writers must be reconciled or edited before release. */
   writerOperationIds: string[];
+  /** Pre-barrier automatic requests must settle before the edit is acknowledged. */
+  collectionRequestIds?: string[];
   /** Hashes of stable entry identity, never deleted plaintext. */
   sourceKeys: string[];
   /** Transient exact-text plan. Removed after verified selective cleanup. */

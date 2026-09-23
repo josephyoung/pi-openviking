@@ -1,4 +1,4 @@
-import { MemoryGovernanceBarrier } from './governance.js';
+import { MemoryGovernanceBarrier, sourceRevoked } from './governance.js';
 import { sameOwner, checkedOwner, type GovernanceJob, type Owner, type Operation } from './types.js';
 import type { GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
 import { checkedScope, checkedMemoryDocumentUri } from './memory-reference.js';
@@ -72,6 +72,26 @@ export class MemorySelectiveService {
       if (job.phase === 'complete') return { status: 'complete' };
       try {
         if (job.phase === 'draining') {
+          const scope = job.scope;
+          for (const requestId of job.collectionRequestIds ?? []) {
+            signal?.throwIfAborted();
+            state = await this.store.read(signal);
+            const request = state.collectionRequests?.[requestId];
+            if (!request || request.scope !== scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+            if (request.phase === 'settled' && request.sourceEntries.some(entryId => sourceRevoked(state, scope, entryId))) {
+              await this.store.transact(current => {
+                const related = current.collectionRequests?.[requestId];
+                if (related?.phase === 'settled') {
+                  related.phase = 'discarded'; delete related.selectionLease;
+                  related.updatedAt = new Date().toISOString();
+                }
+              }, signal);
+              continue;
+            }
+            if (request.phase === 'running' || request.phase === 'settled') return { status: 'pending' };
+          }
+          state = await this.store.read(signal);
+          job = state.governance!.jobs[id];
           for (const operationId of job.writerOperationIds) {
             signal?.throwIfAborted();
             state = await this.store.read(signal);

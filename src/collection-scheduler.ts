@@ -1,4 +1,4 @@
-import { governancePending, sourceRevoked } from './governance.js';
+import { governanceHoldsCollection, sourceRevoked } from './governance.js';
 import { randomUUID } from 'node:crypto';
 import type { CollectionFactSelector } from './collection-selection.js';
 import type { MemoryDelivery } from './delivery.js';
@@ -27,7 +27,7 @@ export interface CollectionSchedulerOptions {
 
 function permitted(state: OwnerState, request: CollectionRequest, scope: string | null): boolean {
   const auth = state.authorization;
-  return !governancePending(state, scope) && !request.sourceEntries.some(entryId => sourceRevoked(state, scope, entryId))
+  return !governanceHoldsCollection(state, request) && !request.sourceEntries.some(entryId => sourceRevoked(state, scope, entryId))
     && request.phase === 'settled' && request.scope === scope && auth.enabled && auth.automaticCollection
     && request.authorizationEpoch === auth.epoch && request.collectionRevision === auth.collectionConsent?.revision
     && request.scope === auth.collectionConsent?.scope;

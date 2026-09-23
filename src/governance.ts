@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { GovernanceJob, Operation, OwnerState, StateStore } from './types.js';
+import type { CollectionRequest, GovernanceJob, Operation, OwnerState, StateStore } from './types.js';
 
 const unsent = new Set(['queued', 'session_created', 'message_delivered']);
 export function governancePending(state: OwnerState, scope: string | null): boolean {
@@ -7,6 +7,13 @@ export function governancePending(state: OwnerState, scope: string | null): bool
 }
 export function governanceHoldsDelivery(state: OwnerState, operation: Operation): boolean {
   return unsent.has(operation.phase) && governancePending(state, operation.scope);
+}
+export function governanceCollectionJob(state: OwnerState, request: CollectionRequest): GovernanceJob | undefined {
+  return Object.values(state.governance?.jobs ?? {}).find(job => job.phase === 'draining'
+    && job.kind !== 'clear' && job.scope === request.scope && job.collectionRequestIds?.includes(request.id));
+}
+export function governanceHoldsCollection(state: OwnerState, request: CollectionRequest): boolean {
+  return governancePending(state, request.scope) && !governanceCollectionJob(state, request);
 }
 function sourceKey(state: OwnerState, scope: string | null, entryId: string): string {
   // Pi copies entry IDs to forks. Session, branch and rewritten source encoding
@@ -68,14 +75,17 @@ export class MemoryGovernanceBarrier {
         ...(operation.collectionSources ?? []).map(source => source.entryId),
         ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]));
       const now = new Date().toISOString();
+      const collectionRequestIds: string[] = [];
       for (const request of Object.values(state.collectionRequests ?? {})) {
         if (request.scope !== input.scope) continue;
         if (input.kind === 'clear') for (const entryId of request.sourceEntries) entries.add(entryId);
         if (['running', 'settled'].includes(request.phase)
-          && (input.kind === 'clear' || input.selectivePlan || request.sourceEntries.some(entryId => entries.has(entryId)))) {
+          && (input.kind === 'clear' || request.sourceEntries.some(entryId => entries.has(entryId)))) {
           request.phase = 'discarded';
           delete request.selectionLease;
           request.updatedAt = now;
+        } else if (input.kind !== 'clear' && ['running', 'settled'].includes(request.phase)) {
+          collectionRequestIds.push(request.id);
         }
       }
       state.governance ??= { revision: 0, jobs: {} };
@@ -84,6 +94,7 @@ export class MemoryGovernanceBarrier {
         memoryUris: input.kind === 'clear' ? [...new Set(operations.flatMap(operation => operation.memoryUris ?? []))] : [input.memoryUri!],
         operationIds: operations.map(operation => operation.id),
         writerOperationIds: scoped.map(operation => operation.id),
+        ...(collectionRequestIds.length ? { collectionRequestIds } : {}),
         sourceKeys: [...entries].map(entryId => sourceKey(state, input.scope, entryId)),
         ...(input.selectivePlan ? { selectivePlan: input.selectivePlan } : {}) };
       state.governance.jobs[job.id] = job;
