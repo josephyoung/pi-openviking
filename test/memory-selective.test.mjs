@@ -433,4 +433,14 @@ test('correcting a multi-fact explicit save restores an unrelated document remov
   assert.equal(state.governance.jobs[job.id].preservedDocuments, undefined);
   const exported = await new MemoryExportService(f.store, f.transport).page({ limit: 10 });
   assert.equal(exported.items.find(item => item.uri === movedPreference).sources[0].status, 'preserved');
+  const next = await selective.begin({ kind: 'correct', memoryUri: movedPreference,
+    selectedText: preference, replacementText: '- Replies in Traditional Chinese' });
+  assert.equal((await selective.advance(next.id)).status, 'complete');
+  const updated = await f.store.read();
+  const finalPreference = updated.operations[f.target.id].memoryUris.find(uri => uri !== f.uri);
+  assert.match(finalPreference, /\/memories\/preserved\/[a-f0-9]{64}\.md$/);
+  assert.equal(f.docs.has(movedPreference), false);
+  assert.equal(f.docs.get(finalPreference), '- Replies in Traditional Chinese');
+  assert.deepEqual(updated.governance.jobs[job.id].preservedUris, [finalPreference]);
+  assert.equal(updated.governance.jobs[next.id].phase, 'complete');
 });
