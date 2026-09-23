@@ -11,6 +11,8 @@ test('model and management tools use host governance; clear requires real UI con
   t.after(() => rm(directory, { recursive: true, force: true }));
   const owner = { accountId: 'account', userId: 'alice' };
   const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
+  const delivery = new MemoryDelivery({ store, transport: { owner }, maxPayloadBytes: 8192 });
+  await delivery.enable('v1');
   const calls = [];
   let isolated = true;
   const governance = {
@@ -45,6 +47,18 @@ test('model and management tools use host governance; clear requires real UI con
   assert(!calls.some(([kind]) => kind === 'clear'));
   assert.equal((await run('memory_clear', {}, { ui: { confirm: async () => true } })).details.status, 'pending');
   assert.deepEqual((await run('memory_export', { limit: 1 })).details.items[0].sources, []);
+  await delivery.pause();
+  assert.equal((await run('memory_export', { limit: 1 })).details.errorCode, 'MEMORY_DISABLED');
+  assert.equal(calls.filter(([kind]) => kind === 'export').length, 1);
+  await delivery.enable('v1');
+  const exportPage = governance.exportPage;
+  governance.exportPage = async (...args) => {
+    const page = await exportPage(...args);
+    await delivery.pause();
+    return page;
+  };
+  assert.equal((await run('memory_export', { limit: 1 })).details.errorCode, 'MEMORY_DISABLED');
+  assert.equal(calls.filter(([kind]) => kind === 'export').length, 2);
   assert.equal((await run('memory_status', { jobId: 'clear-id' })).details.status, 'pending');
   assert.deepEqual(calls.filter(([kind]) => kind === 'clear'), [['clear']]);
   isolated = false;
