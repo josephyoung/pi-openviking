@@ -256,6 +256,49 @@ export class OwnerMemoryClient implements DeliveryTransport {
     return this.#sdk.read(target);
   }
 
+  /** Bound the HTTP response before decoding JSON; stat is only a preflight hint. */
+  async readMemoryLimited(uri: string, maxBytes: number): Promise<string> {
+    const target = this.#documentUri(uri);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 2097152) {
+      throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
+    }
+    await this.verifyIdentity();
+    const query = new URLSearchParams({ uri: target, offset: '0', limit: '-1' });
+    const response = await fetch(`${this.#baseUrl}/api/v1/content/read?${query}`, {
+      redirect: 'error', signal: AbortSignal.timeout(this.#timeoutMs),
+      headers: { 'X-API-Key': this.#key,
+        ...(this.scope ? { 'X-OpenViking-Actor-Peer': this.scope } : {}) },
+    });
+    if (!response.ok) throw new Error(`MEMORY_HTTP_${response.status}`);
+    // JSON escaping may expand a byte by six; leave a small fixed envelope allowance.
+    const wireLimit = maxBytes * 6 + 16384;
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > wireLimit) {
+      await response.body?.cancel();
+      throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    }
+    if (!response.body) throw new Error('INVALID_MEMORY_RESPONSE');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > wireLimit) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally { reader.releaseLock(); }
+    const envelope = object(JSON.parse(Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), bytes).toString('utf8')));
+    if (envelope.status !== 'ok' || typeof envelope.result !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+    if (Buffer.byteLength(envelope.result, 'utf8') > maxBytes) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    return envelope.result;
+  }
+
   async memoryDocumentSize(uri: string): Promise<number> {
     const target = this.#documentUri(uri);
     await this.verifyIdentity();

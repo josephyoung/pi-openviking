@@ -23,7 +23,11 @@ async function setup(t) {
   });
   const transport = { owner, scope: null, async listMemoryDocuments() { return [ownUri, secondUri]; },
     async memoryDocumentSize(uri) { return Buffer.byteLength(uri === ownUri ? 'own text' : 'untracked owned text'); },
-    async readMemory(uri) { return uri === ownUri ? 'own text' : 'untracked owned text'; } };
+    async readMemoryLimited(uri, maxBytes) {
+      const content = uri === ownUri ? 'own text' : 'untracked owned text';
+      if (Buffer.byteLength(content) > maxBytes) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+      return content;
+    } };
   return { store, owner, transport, ownUri, secondUri, projectUri };
 }
 
@@ -69,15 +73,17 @@ test('export enforces byte budgets before reading and returns a cursor for the n
   const f = await setup(t);
   const reads = [];
   const transport = { ...f.transport,
-    async readMemory(uri) { reads.push(uri); return f.transport.readMemory(uri); } };
+    async readMemoryLimited(uri, maxBytes) { reads.push([uri, maxBytes]); return f.transport.readMemoryLimited(uri, maxBytes); } };
   const service = new MemoryExportService(f.store, transport, 100, 100);
   const first = await service.page({ limit: 2, maxBytes: 10 });
   assert.deepEqual(first.items.map(item => item.uri), [f.ownUri]);
   assert(first.nextCursor);
-  assert.deepEqual(reads, [f.ownUri]);
+  assert.deepEqual(reads, [[f.ownUri, 10]]);
   await assert.rejects(service.page({ limit: 1, cursor: first.nextCursor, maxBytes: 10 }), /MEMORY_EXPORT_TOO_LARGE/);
-  assert.deepEqual(reads, [f.ownUri]);
+  assert.deepEqual(reads, [[f.ownUri, 10]]);
   await assert.rejects(new MemoryExportService(f.store, { ...f.transport,
-    async memoryDocumentSize() { return 1; }, async readMemory() { return 'x'.repeat(101); } }, 100, 100)
+    async memoryDocumentSize() { return 1; }, async readMemoryLimited(_uri, maxBytes) {
+      assert.equal(maxBytes, 100); throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    } }, 100, 100)
     .page({ limit: 1 }), /MEMORY_EXPORT_TOO_LARGE/);
 });

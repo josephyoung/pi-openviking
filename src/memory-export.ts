@@ -7,7 +7,7 @@ export interface MemoryExportTransport {
   readonly scope: string | null;
   listMemoryDocuments(): Promise<string[]>;
   memoryDocumentSize(uri: string): Promise<number>;
-  readMemory(uri: string): Promise<string>;
+  readMemoryLimited(uri: string, maxBytes: number): Promise<string>;
 }
 
 export interface ExportedMemory {
@@ -90,7 +90,8 @@ export class MemoryExportService {
     const items: ExportedMemory[] = [];
     let actualBytes = 0;
     for (const uri of selected) {
-      const content = await this.transport.readMemory(uri);
+      const content = await this.transport.readMemoryLimited(uri,
+        Math.min(this.maxDocumentBytes, budget - actualBytes));
       if (typeof content !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
       const bytes = Buffer.byteLength(content, 'utf8');
       actualBytes += bytes;
