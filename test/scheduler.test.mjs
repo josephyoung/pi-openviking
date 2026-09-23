@@ -60,6 +60,29 @@ test('unknown outcomes back off and terminate visibly without repeating the muta
   assert(status.every(value => !('payload' in value) && !('owner' in value)));
 });
 
+test('restart reconciles an exhausted completed commit by reading its receipt only', async t => {
+  const f = await setup(t);
+  await f.store.transact(state => {
+    const operation = state.operations[f.operation.id];
+    operation.phase = 'blocked';
+    operation.errorCode = 'MEMORY_RECONCILIATION_LIMIT';
+    operation.reconciliationPhase = 'processing';
+    operation.taskId = 'task';
+    operation.deliveryAttempts = 90;
+    delete operation.payload;
+  });
+  let inspected = 0;
+  f.transport.inspect = async () => {
+    inspected++;
+    return { status: 'ready', archiveId: 'archive', memoryUris: ['memory'] };
+  };
+  f.createScheduler(f.options).start();
+  await until(async () => (await f.store.read()).operations[f.operation.id].phase === 'ready');
+  assert.equal(inspected, 1);
+  assert.deepEqual(f.calls, []);
+  assert.equal((await f.store.read()).operations[f.operation.id].errorCode, undefined);
+});
+
 test('restart preserves backoff and attempt counts; stopping prevents new delivery', async t => {
   const f = await setup(t);
   await f.store.transact(state => {

@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { MemoryGovernanceBarrier, governanceCandidateText, sourceRevoked } from './governance.js';
 import { sameOwner, checkedOwner, type GovernanceJob, type Owner, type Operation } from './types.js';
 import type { GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
-import { checkedScope, checkedMemoryDocumentUri } from './memory-reference.js';
+import { checkedScope, checkedMemoryDocumentUri, memoryRoot } from './memory-reference.js';
 
 export interface SelectiveTransport {
   readonly owner: Owner;
@@ -196,9 +197,52 @@ export class MemorySelectiveService {
         state = await this.store.read(signal);
         job = state.governance!.jobs[id];
         const plan = job.selectivePlan!;
+        // One explicit save can extract several independent documents. Deleting
+        // its source may remove all of them upstream, so classify and preserve
+        // the unrelated documents before the first destructive request.
+        if (!job.preservedDocuments) {
+          const sourceUris = new Set(job.operationIds.flatMap(operationId =>
+            state.operations[operationId].memoryUris ?? []));
+          const preserved: Record<string, string> = {};
+          let bytes = 0;
+          for (const uri of sourceUris) {
+            signal?.throwIfAborted();
+            const content = await this.transport.readMemory(uri);
+            if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > 32768) {
+              throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+            }
+            let retain: string | undefined;
+            if (uri === plan.memoryUri) {
+              const revised = content.replaceAll(plan.selectedText, plan.replacementText);
+              if (revised.trim()) retain = revised;
+            } else if (!content.includes(plan.selectedText)) {
+              const decision = await this.classifyWriter?.({ selectedText: plan.selectedText,
+                candidateText: content, scope: job.scope }) ?? 'uncertain';
+              if (decision === 'unrelated') retain = content;
+              else if (decision !== 'target') throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+            }
+            if (retain !== undefined) {
+              bytes += Buffer.byteLength(retain, 'utf8');
+              if (bytes > 1048576) throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+              preserved[uri] = retain;
+            }
+          }
+          await this.store.transact(current => {
+            const live = current.governance!.jobs[id];
+            if (live.phase !== 'applying' || live.preservedDocuments) throw new Error('MEMORY_GOVERNANCE_CONFLICT');
+            live.preservedDocuments = preserved;
+          }, signal);
+          state = await this.store.read(signal);
+          job = state.governance!.jobs[id];
+        }
+        const preserved = new Map(Object.entries(job.preservedDocuments!));
         for (const operationId of job.operationIds) {
           signal?.throwIfAborted();
           await this.transport.removeSource(state.operations[operationId]);
+        }
+        for (const [uri, content] of preserved) {
+          signal?.throwIfAborted();
+          await this.transport.replaceMemory(uri, content);
         }
         // A classified old paraphrase may have produced a different document.
         // Delete that exclusive derivative; a shared derivative needs review.
@@ -221,7 +265,7 @@ export class MemorySelectiveService {
           }
         }
         for (const uri of new Set(targetIds.flatMap(operationId => state.operations[operationId].memoryUris ?? []))) {
-          if (uri === plan.memoryUri || !documents.has(uri)) continue;
+          if (uri === plan.memoryUri || preserved.has(uri) || !documents.has(uri)) continue;
           const content = await this.transport.readMemory(uri);
           if (content.includes(plan.selectedText)) continue;
           if (Object.values(state.operations).some(operation => !targetIds.includes(operation.id)
@@ -250,6 +294,21 @@ export class MemorySelectiveService {
         for (const uri of await this.#documents()) {
           if ((await this.transport.readMemory(uri)).includes(plan.selectedText)) throw new Error('MEMORY_DELETION_UNCONFIRMED');
         }
+        // A generated URI can itself contain the old fact. Relocate retained
+        // documents to stable opaque names before releasing the barrier. Only
+        // exclusive documents move; shared documents keep their other source.
+        const relocated: Record<string, string> = {};
+        for (const uri of preserved.keys()) {
+          if (Object.values(state.operations).some(operation => !targetIds.includes(operation.id)
+            && operation.phase === 'ready' && operation.memoryUris?.includes(uri))) continue;
+          const digest = createHash('sha256').update(JSON.stringify([job.id, uri])).digest('hex');
+          const destination = `${memoryRoot(this.store.owner, job.scope)}/preserved/${digest}.md`;
+          const current = await this.transport.readMemory(uri);
+          await this.transport.replaceMemory(destination, current);
+          await this.transport.removeMemory(uri);
+          relocated[uri] = destination;
+        }
+        const surviving = new Set(await this.#documents());
         await this.store.transact(current => {
           const live = current.governance!.jobs[id];
           if (live.phase !== 'applying') throw new Error('MEMORY_GOVERNANCE_CONFLICT');
@@ -259,11 +318,18 @@ export class MemorySelectiveService {
             // Keep the URI lineage for surviving shared documents and export.
             // The old source is marked revoked and its plaintext is erased.
             delete operation.payload;
+            if (operation.memoryUris) operation.memoryUris = operation.memoryUris
+              .map(uri => relocated[uri] ?? uri).filter(uri => surviving.has(uri));
             operation.updatedAt = new Date().toISOString();
           }
           for (const operationId of live.writerOperationIds) delete current.operations[operationId].payload;
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
-          delete live.selectivePlan; delete live.mergedResolutions; delete live.errorCode;
+          const retained = [...preserved.keys()].filter(uri => uri !== plan.memoryUri)
+            .map(uri => relocated[uri] ?? uri);
+          if (retained.length) live.preservedUris = retained;
+          const targetUri = relocated[plan.memoryUri] ?? plan.memoryUri;
+          live.memoryUris = surviving.has(targetUri) ? [targetUri] : [];
+          delete live.selectivePlan; delete live.mergedResolutions; delete live.preservedDocuments; delete live.errorCode;
         }, signal);
         return { status: 'complete' };
       } catch (error) {

@@ -15,7 +15,7 @@ export interface ExportedMemory {
   content: string;
   sources: Array<{
     kind: 'explicit' | 'automatic';
-    status: 'current' | 'revoked';
+    status: 'current' | 'preserved' | 'revoked';
     sessionId: string;
     entryId: string;
     createdAt: string;
@@ -106,7 +106,10 @@ export class MemoryExportService {
       const sources = Object.values(start.operations).filter(operation => operation.scope === this.transport.scope
         && operation.memoryUris?.includes(uri) && (operation.phase === 'ready'
           || operation.phase === 'blocked' && operation.errorCode === 'MEMORY_SOURCE_REVOKED')).map(operation => ({
-        kind: operation.kind, status: operation.phase === 'ready' ? 'current' as const : 'revoked' as const,
+        kind: operation.kind, status: operation.phase === 'ready' ? 'current' as const
+          : Object.values(start.governance?.jobs ?? {}).some(job => job.phase === 'complete'
+            && !job.supersededBy && job.operationIds.includes(operation.id)
+            && job.preservedUris?.includes(uri)) ? 'preserved' as const : 'revoked' as const,
         sessionId: operation.source.sessionId,
         entryId: operation.source.entryId, createdAt: operation.createdAt,
       }));

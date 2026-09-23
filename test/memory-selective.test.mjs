@@ -93,7 +93,9 @@ test('forget while paused preserves shared document and reconciles a lost replac
   const recovered = new MemorySelectiveService(new FileStateStore({ owner: f.owner,
     directory: f.directory, policyVersion: 'v1' }), f.transport);
   assert.equal((await recovered.advance(job.id)).status, 'complete');
-  assert.equal(f.docs.get(f.uri), `\n${f.unrelated}`);
+  const moved = (await f.store.read()).governance.jobs[job.id].memoryUris[0];
+  assert.equal(f.docs.has(f.uri), false);
+  assert.equal(f.docs.get(moved), `\n${f.unrelated}`);
   assert(!JSON.stringify([...f.docs.values()]).includes(f.old));
 });
 
@@ -365,6 +367,8 @@ test('forgetting one of two facts from the same source keeps the other source cu
   assert.equal(state.operations[meetingId].phase, 'ready');
   assert.equal(docs.get(meetingUri), 'Meeting day: Tuesday');
   assert.equal(docs.has(teaUri), false);
+  assert.deepEqual(state.operations[teaId].memoryUris, []);
+  assert.deepEqual(state.governance.jobs[job.id].memoryUris, []);
   await store.transact(current => {
     const prior = current.collectionRequests[requestId];
     current.collectionRequests['late-fork'] = { ...prior, id: 'late-fork', phase: 'settled',
@@ -374,4 +378,42 @@ test('forgetting one of two facts from the same source keeps the other source cu
     facts: [fact('Jasmine tea is my favorite.')] });
   assert.deepEqual(replay, { status: 'recorded', operationIds: [] });
   assert.equal(Object.keys((await store.read()).operations).length, 2);
+});
+
+test('correcting a multi-fact explicit save restores an unrelated document removed with its source', async t => {
+  const f = await setup(t);
+  const preferenceUri = 'viking://user/alice/memories/preferences/language.md';
+  const preference = '- Replies in Simplified Chinese';
+  f.docs.set(preferenceUri, preference);
+  await f.store.transact(state => {
+    state.operations[f.target.id].memoryUris = [f.uri, preferenceUri];
+  });
+  let loseReply = true;
+  f.transport.removeSource = async operation => {
+    f.removedSources.push(operation.id);
+    f.docs.delete(f.uri);
+    f.docs.delete(preferenceUri);
+    if (loseReply) { loseReply = false; throw new Error('lost deletion reply'); }
+  };
+  const classifier = async ({ candidateText }) => candidateText === preference || candidateText.includes('Meeting day')
+    ? 'unrelated' : 'uncertain';
+  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter, classifier);
+  const replacement = '- Favorite tea: oolong';
+  const job = await selective.begin({ kind: 'correct', memoryUri: f.uri,
+    selectedText: f.old, replacementText: replacement });
+  assert.equal((await selective.advance(job.id)).status, 'pending');
+  assert.equal((await f.store.read()).governance.jobs[job.id].preservedDocuments[preferenceUri], preference);
+  const reopened = new FileStateStore({ owner: f.owner, directory: f.directory, policyVersion: 'v1' });
+  assert.equal((await new MemorySelectiveService(reopened, f.transport).advance(job.id)).status, 'complete');
+  assert.equal(f.docs.get(f.uri), `${replacement}\n${f.unrelated}`);
+  const state = await f.store.read();
+  const movedPreference = state.operations[f.target.id].memoryUris[1];
+  assert.match(movedPreference, /\/memories\/preserved\/[a-f0-9]{64}\.md$/);
+  assert.equal(f.docs.has(preferenceUri), false);
+  assert.equal(f.docs.get(movedPreference), preference);
+  assert(![...f.docs.values()].some(value => value.includes(f.old)));
+  assert.deepEqual(state.governance.jobs[job.id].preservedUris, [movedPreference]);
+  assert.equal(state.governance.jobs[job.id].preservedDocuments, undefined);
+  const exported = await new MemoryExportService(f.store, f.transport).page({ limit: 10 });
+  assert.equal(exported.items.find(item => item.uri === movedPreference).sources[0].status, 'preserved');
 });

@@ -86,13 +86,28 @@ function verify(state: OwnerState, owner: Owner): void {
             job.writerClassifications?.[operationId] !== 'target'
             || !state.operations[operationId]?.memoryUris?.includes(job.memoryUris[0])
             || typeof text !== 'string' || !text.trim() || text.length > 16384)))
+        || (job.preservedDocuments !== undefined && (job.kind === 'clear' || job.phase !== 'applying'
+          || !job.preservedDocuments || typeof job.preservedDocuments !== 'object'
+          || Array.isArray(job.preservedDocuments)
+          || Object.entries(job.preservedDocuments).some(([uri, content]) =>
+            !isMemoryDocumentUri(owner, job.scope, uri) || typeof content !== 'string'
+            || !content.trim() || Buffer.byteLength(content, 'utf8') > 49152)
+          || Object.values(job.preservedDocuments).reduce((sum, content) =>
+            sum + Buffer.byteLength(content, 'utf8'), 0) > 1048576))
+        || (job.preservedUris !== undefined && (job.kind === 'clear' || job.phase !== 'complete'
+          || !Array.isArray(job.preservedUris) || !job.preservedUris.length
+          || new Set(job.preservedUris).size !== job.preservedUris.length
+          || job.preservedUris.some(uri => !isMemoryDocumentUri(owner, job.scope, uri)
+            || uri === job.memoryUris[0]
+            || !job.operationIds.some(operationId => state.operations[operationId].memoryUris?.includes(uri)))))
         || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
         || (job.collectionRequestIds !== undefined && (!Array.isArray(job.collectionRequestIds)
           || job.kind === 'clear' || new Set(job.collectionRequestIds).size !== job.collectionRequestIds.length
           || job.collectionRequestIds.some(requestId => typeof requestId !== 'string'
             || !state.collectionRequests?.[requestId] || state.collectionRequests[requestId].scope !== job.scope)))
         || !Array.isArray(job.memoryUris) || new Set(job.memoryUris).size !== job.memoryUris.length
-        || (job.kind !== 'clear' && job.memoryUris.length !== 1)) throw new Error('INVALID_MEMORY_GOVERNANCE');
+        || (job.kind !== 'clear' && (job.phase === 'complete'
+          ? job.memoryUris.length > 1 : job.memoryUris.length !== 1))) throw new Error('INVALID_MEMORY_GOVERNANCE');
       if (job.memoryUris.some(uri => !isMemoryDocumentUri(owner, job.scope, uri))) {
         throw new Error('INVALID_MEMORY_GOVERNANCE');
       }

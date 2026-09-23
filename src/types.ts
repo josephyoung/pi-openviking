@@ -121,6 +121,10 @@ export interface GovernanceJob {
   writerClassifications?: Record<string, 'target' | 'unrelated'>;
   /** Owner-reviewed exact derivative text to remove from a shared target document. */
   mergedResolutions?: Record<string, string>;
+  /** Exact documents staged before source deletion; replayable after a lost reply or restart. */
+  preservedDocuments?: Record<string, string>;
+  /** Non-target documents kept after removing a multi-fact source. */
+  preservedUris?: string[];
   /** A confirmed whole-scope clear replaces this unfinished selective job. */
   supersededBy?: string;
   cancelledByRetirement?: boolean;
