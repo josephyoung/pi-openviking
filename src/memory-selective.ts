@@ -47,7 +47,8 @@ export class MemorySelectiveService {
   /** Resolve ambiguity before the durable barrier; the coordinator rechecks after draining. */
   async begin(input: { kind: 'forget' | 'correct'; memoryUri: string;
     selectedText: string; replacementText?: string }): Promise<GovernanceJob> {
-    if ((await this.store.read()).retirement) throw new Error('MEMORY_RETIRED');
+    const initialState = await this.store.read();
+    if (initialState.retirement) throw new Error('MEMORY_RETIRED');
     const uri = this.#document(input?.memoryUri);
     const selectedText = input?.selectedText;
     const replacementText = input?.kind === 'forget' ? '' : input?.replacementText;
@@ -80,8 +81,19 @@ export class MemorySelectiveService {
       scope: this.transport.scope }) ?? 'uncertain') !== 'unrelated') {
       throw new Error('MEMORY_TARGET_AMBIGUOUS');
     }
+    // OpenViking may merge independently selected facts into one document and
+    // paraphrase their original text. A fact digest then identifies neither
+    // document phrase. Revoke the whole source group only after the exact
+    // phrase is unique and the rest of the document is proven unrelated.
+    const matching = Object.values(initialState.operations).filter(operation =>
+      operation.scope === this.transport.scope && operation.memoryUris?.includes(uri));
+    const exactDigest = createHash('sha256').update(selectedText).digest('hex');
+    const exact = matching.filter(operation => operation.factDigest === exactDigest);
+    const verifiedCoalescedOperationIds = matching.length > 1 && exact.length !== 1
+      ? matching.map(operation => operation.id).sort() : undefined;
     return new MemoryGovernanceBarrier(this.store).begin({ kind: input.kind, scope: this.transport.scope,
-      memoryUri: uri, selectivePlan: { memoryUri: uri, selectedText, replacementText } });
+      memoryUri: uri, selectivePlan: { memoryUri: uri, selectedText, replacementText },
+      verifiedCoalescedOperationIds });
   }
 
   /** An owner-reviewed exact phrase in a merged derivative. The original

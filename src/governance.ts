@@ -64,11 +64,17 @@ export class MemoryGovernanceBarrier {
   constructor(private readonly store: StateStore) {}
 
   async begin(input: { kind: GovernanceJob['kind']; scope: string | null; memoryUri?: string;
-    selectivePlan?: GovernanceJob['selectivePlan']; supersedePending?: boolean }): Promise<GovernanceJob> {
+    selectivePlan?: GovernanceJob['selectivePlan']; supersedePending?: boolean;
+    verifiedCoalescedOperationIds?: string[] }): Promise<GovernanceJob> {
     if (!input || !['forget', 'correct', 'clear'].includes(input.kind)
       || (input.scope !== null && (typeof input.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.scope)))
       || (input.kind === 'clear' ? input.memoryUri !== undefined || input.selectivePlan !== undefined : typeof input.memoryUri !== 'string')
       || (input.supersedePending !== undefined && (input.kind !== 'clear' || input.supersedePending !== true))
+      || (input.verifiedCoalescedOperationIds !== undefined && (!input.selectivePlan
+        || !Array.isArray(input.verifiedCoalescedOperationIds)
+        || input.verifiedCoalescedOperationIds.length < 2
+        || new Set(input.verifiedCoalescedOperationIds).size !== input.verifiedCoalescedOperationIds.length
+        || input.verifiedCoalescedOperationIds.some(id => typeof id !== 'string' || !id)))
       || (input.selectivePlan !== undefined && (input.kind === 'clear'
         || input.selectivePlan.memoryUri !== input.memoryUri
         || typeof input.selectivePlan.selectedText !== 'string' || !input.selectivePlan.selectedText.trim()
@@ -96,10 +102,15 @@ export class MemoryGovernanceBarrier {
       const matchingUri = input.kind === 'clear' ? [] : scoped.filter(operation => operation.memoryUris?.includes(input.memoryUri!));
       const exactSources = input.selectivePlan ? matchingUri.filter(operation =>
         operation.factDigest === createHash('sha256').update(input.selectivePlan!.selectedText).digest('hex')) : [];
-      if (input.kind !== 'clear' && matchingUri.length > 1 && exactSources.length !== 1) {
+      const verifiedGroup = input.verifiedCoalescedOperationIds !== undefined
+        && JSON.stringify([...input.verifiedCoalescedOperationIds].sort())
+          === JSON.stringify(matchingUri.map(operation => operation.id).sort());
+      if ((input.verifiedCoalescedOperationIds !== undefined && !verifiedGroup)
+        || (input.kind !== 'clear' && matchingUri.length > 1 && exactSources.length !== 1 && !verifiedGroup)) {
         throw new Error('MEMORY_TARGET_AMBIGUOUS');
       }
-      const targetIds = new Set((exactSources.length === 1 ? exactSources : matchingUri).map(operation => operation.id));
+      const targetIds = new Set((exactSources.length === 1 && !verifiedGroup
+        ? exactSources : matchingUri).map(operation => operation.id));
       const operations = input.kind === 'clear' ? scoped : scoped.filter(operation => targetIds.has(operation.id)
         || input.selectivePlan && operation.payload?.includes(input.selectivePlan.selectedText));
       if (input.kind !== 'clear' && !operations.length && !input.selectivePlan) throw new Error('MEMORY_TARGET_NOT_FOUND');

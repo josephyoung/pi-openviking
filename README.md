@@ -72,7 +72,12 @@ supervisor; hosts must still provide their own worker tool policy.
   remainder (for example, in an extracted title), governance rejects it before
   mutation so the owner can select and replace the complete passage. Later
   corrections update earlier completed jobs' document references when a
-  retained document moves again.
+  retained document moves again. If OpenViking merges independently selected
+  facts into one document and paraphrases their source text, a unique exact
+  selection can still be corrected after the remaining text is classified
+  unrelated. All source operations for that merged document are revoked to
+  prevent replay; retained content appears as a corrected document with
+  revoked source provenance.
 - Pause suppresses unsent operations and removes their pending bodies. Enabling
   again does not replay those operations or authorize automatic collection.
 

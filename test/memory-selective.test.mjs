@@ -83,6 +83,60 @@ test('correction drains old writers, preserves unrelated text, blocks old forks 
   assert.equal((await f.delivery.save({ ...f.target.source, entryId: 'fresh', branchId: 'fresh' }, f.old)).phase, 'queued');
 });
 
+test('correction of a paraphrased fact in a merged document preserves the unrelated fact', async t => {
+  const f = await setup(t);
+  await f.store.transact(state => {
+    state.operations[f.other.id].phase = 'ready';
+    state.operations[f.other.id].memoryUris = [f.uri];
+    state.operations[f.target.id].factDigest = createHash('sha256').update('I like jasmine tea').digest('hex');
+    delete state.operations[f.other.id].payload;
+  });
+  const job = await f.selective.begin({ kind: 'correct', memoryUri: f.uri,
+    selectedText: f.old, replacementText: '- Favorite tea: oolong' });
+  assert.equal((await f.selective.advance(job.id)).status, 'complete');
+  assert.equal(f.docs.size, 1);
+  assert.equal([...f.docs.values()][0], '- Favorite tea: oolong\n- Meeting day: Tuesday');
+  assert(![...f.docs.keys()].some(uri => uri.includes('jasmine')));
+  const state = await f.store.read();
+  assert.equal(state.operations[f.other.id].phase, 'blocked');
+  assert.equal(state.operations[f.target.id].phase, 'blocked');
+  assert.deepEqual(state.governance.jobs[job.id].operationIds.sort(), [f.target.id, f.other.id].sort());
+  const exported = await new MemoryExportService(f.store, f.transport).page({ limit: 10 });
+  assert.deepEqual(exported.items[0].sources.map(source => source.status), ['revoked', 'revoked']);
+  assert.equal(exported.items[0].revisions[0].kind, 'correct');
+  assert.equal((await f.delivery.save({ ...f.other.source, sessionId: 'fork' }, f.unrelated)).errorCode,
+    'MEMORY_SOURCE_REVOKED');
+});
+
+test('a merged document writer appearing during target inspection stops before governance begins', async t => {
+  const f = await setup(t);
+  await f.store.transact(state => {
+    state.operations[f.other.id].phase = 'ready';
+    state.operations[f.other.id].memoryUris = [f.uri];
+    state.operations[f.target.id].factDigest = createHash('sha256').update('I like jasmine tea').digest('hex');
+    delete state.operations[f.other.id].payload;
+  });
+  let raced = false;
+  const transport = { ...f.transport, async listMemoryDocuments() {
+    if (!raced) {
+      raced = true;
+      const added = await f.delivery.save({ sessionId: 'chat', entryId: 'raced',
+        branchId: 'raced', contentVersion: 'v1' }, 'independent fact');
+      await f.store.transact(state => {
+        state.operations[added.id].phase = 'ready';
+        state.operations[added.id].memoryUris = [f.uri];
+        delete state.operations[added.id].payload;
+      });
+    }
+    return [...f.docs.keys()].sort();
+  } };
+  const selective = new MemorySelectiveService(f.store, transport, f.drainWriter,
+    async ({ candidateText }) => candidateText.includes('Meeting day') ? 'unrelated' : 'uncertain');
+  await assert.rejects(selective.begin({ kind: 'correct', memoryUri: f.uri,
+    selectedText: f.old, replacementText: '- Favorite tea: oolong' }), /MEMORY_TARGET_AMBIGUOUS/);
+  assert.equal((await f.store.read()).governance, undefined);
+});
+
 test('forget while paused preserves shared document and reconciles a lost replacement reply', async t => {
   const f = await setup(t);
   await f.delivery.pause();
