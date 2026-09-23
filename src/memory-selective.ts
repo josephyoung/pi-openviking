@@ -59,9 +59,26 @@ export class MemorySelectiveService {
     const uris = await this.#documents();
     if (!uris.includes(uri)) throw new Error('MEMORY_TARGET_NOT_FOUND');
     let matches = 0;
-    for (const current of uris) matches += occurrences(await this.transport.readMemory(current), selectedText);
-    if (matches !== 1 || !String(await this.transport.readMemory(uri)).includes(selectedText)) {
+    let targetContent: string | undefined;
+    for (const current of uris) {
+      const content = await this.transport.readMemory(current);
+      matches += occurrences(content, selectedText);
+      if (current === uri) targetContent = content;
+    }
+    if (matches !== 1 || !targetContent?.includes(selectedText)) {
       throw new Error(matches ? 'MEMORY_TARGET_AMBIGUOUS' : 'MEMORY_TARGET_NOT_FOUND');
+    }
+    // An exact phrase can be unique while the same fact survives in a title or
+    // paraphrase. Require a broader owner-selected replacement before creating
+    // a job when the remainder cannot be proven independent of the old fact.
+    const remainder = targetContent.replace(selectedText, '').trim();
+    const selectedEnd = [...selectedText.trim().replace(/[.,!?;:。！？；：]+$/u, '')].slice(-4).join('');
+    if (remainder && [...selectedEnd].length === 4 && remainder.includes(selectedEnd)) {
+      throw new Error('MEMORY_TARGET_AMBIGUOUS');
+    }
+    if (remainder && (await this.classifyWriter?.({ selectedText, candidateText: remainder,
+      scope: this.transport.scope }) ?? 'uncertain') !== 'unrelated') {
+      throw new Error('MEMORY_TARGET_AMBIGUOUS');
     }
     return new MemoryGovernanceBarrier(this.store).begin({ kind: input.kind, scope: this.transport.scope,
       memoryUri: uri, selectivePlan: { memoryUri: uri, selectedText, replacementText } });

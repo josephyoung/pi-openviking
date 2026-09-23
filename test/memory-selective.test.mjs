@@ -110,6 +110,21 @@ test('ambiguous or foreign targets reject before registration or mutation', asyn
     owner: { accountId: 'account', userId: 'bob' } }), /OWNER_MISMATCH/);
 });
 
+test('a selected phrase cannot leave a paraphrased old fact in the document title', async t => {
+  const f = await setup(t);
+  const content = `# Jasmine\n${f.old}`;
+  f.docs.set(f.uri, content);
+  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter,
+    async () => 'unrelated');
+  await assert.rejects(selective.begin({ kind: 'correct', memoryUri: f.uri,
+    selectedText: f.old, replacementText: '- Favorite tea: oolong' }), /MEMORY_TARGET_AMBIGUOUS/);
+  assert.equal((await f.store.read()).governance, undefined);
+  const job = await selective.begin({ kind: 'correct', memoryUri: f.uri,
+    selectedText: content, replacementText: '# Oolong\n- Favorite tea: oolong' });
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  assert(![...f.docs.values()].some(value => value.includes('Jasmine')));
+});
+
 test('only the registered coordinator can drain an unrelated queued writer under the barrier', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-drain-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -174,7 +189,9 @@ test('selective governance drains an unrelated pre-barrier collection and filter
 
 test('an unclassified queued writer keeps governance pending until its source is resolved', async t => {
   const f = await setup(t);
-  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter);
+  let reviews = 0;
+  const selective = new MemorySelectiveService(f.store, f.transport, f.drainWriter,
+    async () => ++reviews === 1 ? 'unrelated' : 'uncertain');
   const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
   assert.deepEqual(await selective.advance(job.id), {
     status: 'pending', errorCode: 'MEMORY_GOVERNANCE_REVIEW_REQUIRED',

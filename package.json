@@ -1,6 +1,6 @@
 {
   "name": "@josephyoung/pi-openviking",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Owner-bound OpenViking memory extension for pi",
   "keywords": [
     "pi-package",
