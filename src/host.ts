@@ -86,6 +86,11 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
   if (!sameOwner(options.owner, options.client.owner) || !sameOwner(options.owner, options.stateStore.owner)) {
     throw new Error('MEMORY_OWNER_MISMATCH');
   }
+  const scope = options.scope ?? null;
+  if (scope !== null && !/^[A-Za-z0-9_-]{1,128}$/.test(scope)
+    || ('scope' in options.client && options.client.scope !== scope)) {
+    throw new Error('MEMORY_SCOPE_MISMATCH');
+  }
   const policy = { ...options.policy };
   if (![policy.recallTimeoutMs, policy.recallTokenBudget, policy.recallLimit, policy.maxPayloadBytes]
     .every(value => Number.isSafeInteger(value) && value > 0) || !Number.isFinite(policy.minimumScore)) {

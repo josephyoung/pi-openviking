@@ -243,6 +243,12 @@ test('an accepted paraphrase merged into the selected document stays pending for
   assert.equal(state.governance.jobs[job.id].phase, 'applying');
   assert.equal(state.operations[paraphrase.id].phase, 'ready');
   assert.equal(state.operations[paraphrase.id].payload, 'I enjoy jasmine tea');
+  await selective.resolveMergedWriter(job.id, paraphrase.id, 'User prefers jasmine tea');
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  assert.equal(f.docs.get(f.uri), `\n${f.unrelated}\n`);
+  const completed = await f.store.read();
+  assert.equal(completed.operations[paraphrase.id].payload, undefined);
+  assert.equal(completed.governance.jobs[job.id].mergedResolutions, undefined);
 });
 
 test('forgetting one of two facts from the same source keeps the other source current', async t => {

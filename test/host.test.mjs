@@ -30,6 +30,10 @@ test('factory rejects owner mismatch and duplicate registration; no fallback cre
   const f = await setup(t);
   assert.throws(() => f.factory(f.pi), /DUPLICATE_MEMORY_EXTENSION/);
   assert.throws(() => createOpenVikingExtension({ ...f.options, owner: { accountId: 'test', userId: 'bob' } }), /MEMORY_OWNER_MISMATCH/);
+  assert.throws(() => createOpenVikingExtension({ ...f.options, scope: 'project_a',
+    client: { ...f.client, scope: 'project_b' } }), /MEMORY_SCOPE_MISMATCH/);
+  assert.throws(() => createOpenVikingExtension({ ...f.options, scope: null,
+    client: { ...f.client, scope: 'project_b' } }), /MEMORY_SCOPE_MISMATCH/);
 });
 
 test('disabled context never sends a query and removes previous reference blocks', async t => {

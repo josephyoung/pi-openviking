@@ -71,6 +71,32 @@ export class MemoryGovernanceService {
     });
   }
 
+  /** Exact remote text is shown only through the authenticated management API. */
+  async reviewMergedCandidates(jobId: string): Promise<Array<{ operationId: string;
+    candidateText: string; documentText: string }>> {
+    const state = await this.store.read();
+    const job = state.governance?.jobs[jobId];
+    const plan = job?.selectivePlan;
+    if (!job || job.scope !== this.client.scope || job.phase !== 'applying' || !plan) {
+      throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+    }
+    const operationIds = job.operationIds.filter(operationId =>
+      job.writerClassifications?.[operationId] === 'target'
+      && state.operations[operationId].memoryUris?.includes(plan.memoryUri)
+      && !job.mergedResolutions?.[operationId]);
+    if (!operationIds.length) return [];
+    const documentText = await this.client.readMemoryLimited(plan.memoryUri, 32768);
+    return operationIds.map(operationId => ({ operationId,
+      candidateText: governanceCandidateText(state.operations[operationId].payload ?? ''), documentText }));
+  }
+
+  async resolveMergedWriter(jobId: string, operationId: string, exactText: string): Promise<GovernanceReceipt> {
+    const job = (await this.store.read()).governance?.jobs[jobId];
+    if (!job || job.scope !== this.client.scope) throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+    await this.#selective.resolveMergedWriter(jobId, operationId, exactText);
+    return this.#receipt(job, await this.#selective.advance(jobId));
+  }
+
   /** Idempotent recovery after restart or an unknown remote reply. */
   async advancePending(): Promise<GovernanceReceipt | undefined> {
     const job = Object.values((await this.store.read()).governance?.jobs ?? {}).find(job =>

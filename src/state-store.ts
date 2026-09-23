@@ -66,6 +66,13 @@ function verify(state: OwnerState, owner: Owner): void {
           || Array.isArray(job.writerClassifications)
           || Object.entries(job.writerClassifications).some(([operationId, decision]) =>
             !job.writerOperationIds.includes(operationId) || !['target', 'unrelated'].includes(decision))))
+        || (job.mergedResolutions !== undefined && (job.kind === 'clear' || job.phase === 'complete'
+          || !job.mergedResolutions || typeof job.mergedResolutions !== 'object'
+          || Array.isArray(job.mergedResolutions)
+          || Object.entries(job.mergedResolutions).some(([operationId, text]) =>
+            job.writerClassifications?.[operationId] !== 'target'
+            || !state.operations[operationId]?.memoryUris?.includes(job.memoryUris[0])
+            || typeof text !== 'string' || !text.trim() || text.length > 16384)))
         || job.operationIds.some(operationId => !job.writerOperationIds.includes(operationId))
         || (job.collectionRequestIds !== undefined && (!Array.isArray(job.collectionRequestIds)
           || job.kind === 'clear' || new Set(job.collectionRequestIds).size !== job.collectionRequestIds.length

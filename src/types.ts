@@ -119,6 +119,8 @@ export interface GovernanceJob {
   replaySourceKeys?: string[];
   /** Auditable decisions for pre-barrier facts whose text may paraphrase the target. */
   writerClassifications?: Record<string, 'target' | 'unrelated'>;
+  /** Owner-reviewed exact derivative text to remove from a shared target document. */
+  mergedResolutions?: Record<string, string>;
   /** Transient exact-text plan. Removed after verified selective cleanup. */
   selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
   errorCode?: string;

@@ -65,6 +65,40 @@ export class MemorySelectiveService {
       memoryUri: uri, selectivePlan: { memoryUri: uri, selectedText, replacementText } });
   }
 
+  /** An owner-reviewed exact phrase in a merged derivative. The original
+   * selected phrase and this phrase are both removed before acknowledgement. */
+  async resolveMergedWriter(jobId: string, operationId: string, exactText: string): Promise<void> {
+    if (typeof exactText !== 'string' || !exactText.trim() || exactText.length > 16384) {
+      throw new Error('INVALID_MEMORY_GOVERNANCE');
+    }
+    await this.store.withGovernanceLock(async () => {
+      const state = await this.store.read();
+      const job = state.governance?.jobs[jobId];
+      const plan = job?.selectivePlan;
+      const operation = state.operations[operationId];
+      if (!job || job.phase !== 'applying' || job.scope !== this.transport.scope || !plan
+        || job.writerClassifications?.[operationId] !== 'target'
+        || !operation?.memoryUris?.includes(plan.memoryUri)
+        || exactText.includes(plan.selectedText) || plan.selectedText.includes(exactText)
+        || plan.replacementText && (exactText.includes(plan.replacementText)
+          || plan.replacementText.includes(exactText))) {
+        throw new Error('MEMORY_GOVERNANCE_TARGET_MISMATCH');
+      }
+      const content = await this.transport.readMemory(plan.memoryUri);
+      if (occurrences(content, exactText) !== 1) throw new Error('MEMORY_TARGET_AMBIGUOUS');
+      await this.store.transact(current => {
+        const live = current.governance?.jobs[jobId];
+        if (!live || live.phase !== 'applying' || live.scope !== this.transport.scope
+          || live.writerClassifications?.[operationId] !== 'target') throw new Error('MEMORY_GOVERNANCE_CONFLICT');
+        live.mergedResolutions ??= {};
+        const prior = live.mergedResolutions[operationId];
+        if (prior && prior !== exactText) throw new Error('MEMORY_GOVERNANCE_CONFLICT');
+        live.mergedResolutions[operationId] = exactText;
+        delete live.errorCode;
+      });
+    });
+  }
+
   async advance(id: string, signal?: AbortSignal): Promise<GovernanceProgress> {
     if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('INVALID_MEMORY_GOVERNANCE');
     return this.store.withGovernanceLock(async () => {
@@ -155,9 +189,17 @@ export class MemorySelectiveService {
         const writerClassifications = job.writerClassifications ?? {};
         // A second accepted source can merge a paraphrase into the selected
         // document. Exact-text replacement cannot prove that paraphrase gone.
-        if (targetIds.some(operationId => writerClassifications[operationId] === 'target'
+        for (const operationId of targetIds.filter(operationId => writerClassifications[operationId] === 'target'
           && state.operations[operationId].memoryUris?.includes(plan.memoryUri))) {
-          throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+          const exactText = job.mergedResolutions?.[operationId];
+          if (!exactText) throw new Error('MEMORY_GOVERNANCE_REVIEW_REQUIRED');
+          const content = await this.transport.readMemory(plan.memoryUri);
+          if (occurrences(content, exactText) > 1) throw new Error('MEMORY_TARGET_AMBIGUOUS');
+          if (content.includes(exactText)) {
+            const revised = content.replace(exactText, '');
+            if (revised.trim()) await this.transport.replaceMemory(plan.memoryUri, revised);
+            else await this.transport.removeMemory(plan.memoryUri);
+          }
         }
         for (const uri of new Set(targetIds.flatMap(operationId => state.operations[operationId].memoryUris ?? []))) {
           if (uri === plan.memoryUri || !documents.has(uri)) continue;
@@ -202,7 +244,7 @@ export class MemorySelectiveService {
           }
           for (const operationId of live.writerOperationIds) delete current.operations[operationId].payload;
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
-          delete live.selectivePlan; delete live.errorCode;
+          delete live.selectivePlan; delete live.mergedResolutions; delete live.errorCode;
         }, signal);
         return { status: 'complete' };
       } catch (error) {
