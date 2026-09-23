@@ -56,6 +56,7 @@ export class MemoryExportService {
     if (!sameOwner(store.owner, transport.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
     checkedScope(transport.scope);
     if (![maxDocumentBytes, maxPageBytes].every(value => Number.isSafeInteger(value) && value > 0)
+      || maxDocumentBytes > 2097152
       || maxPageBytes < maxDocumentBytes) throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
   }
 
@@ -90,12 +91,17 @@ export class MemoryExportService {
     const items: ExportedMemory[] = [];
     let actualBytes = 0;
     for (const uri of selected) {
-      const content = await this.transport.readMemoryLimited(uri,
-        Math.min(this.maxDocumentBytes, budget - actualBytes));
+      if (actualBytes >= budget) break;
+      let content: string;
+      try { content = await this.transport.readMemoryLimited(uri,
+        Math.min(this.maxDocumentBytes, budget - actualBytes)); }
+      catch (error) {
+        if (items.length && error instanceof Error && error.message === 'MEMORY_EXPORT_TOO_LARGE') break;
+        throw error;
+      }
       if (typeof content !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
       const bytes = Buffer.byteLength(content, 'utf8');
-      actualBytes += bytes;
-      if (bytes > this.maxDocumentBytes || actualBytes > budget) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+      if (bytes > this.maxDocumentBytes) throw new Error('MEMORY_EXPORT_TOO_LARGE');
       const sources = Object.values(start.operations).filter(operation => operation.scope === this.transport.scope
         && operation.memoryUris?.includes(uri) && (operation.phase === 'ready'
           || operation.phase === 'blocked' && operation.errorCode === 'MEMORY_SOURCE_REVOKED')).map(operation => ({
@@ -112,16 +118,30 @@ export class MemoryExportService {
         && (job.kind === 'correct' || job.kind === 'forget') && job.memoryUris.includes(uri))
         .map(job => ({ kind: job.kind as 'correct' | 'forget', revision: job.revision,
           createdAt: job.createdAt, completedAt: job.completedAt }));
-      items.push({ uri, content, sources, revisions });
+      const item = { uri, content, sources, revisions };
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
+      if (actualBytes + itemBytes > budget) {
+        if (!items.length) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+        break;
+      }
+      actualBytes += itemBytes;
+      items.push(item);
     }
     const finish = await this.store.read();
     if (finish.revision !== start.revision || governancePending(finish, this.transport.scope)) {
       throw new Error('MEMORY_EXPORT_CHANGED');
     }
-    const last = selected.at(-1);
-    const nextCursor = last && position + 1 + selected.length < uris.length
-      ? Buffer.from(JSON.stringify({ version: 1, owner: this.store.owner, scope: this.transport.scope,
-        revision: start.revision, after: last } satisfies Cursor)).toString('base64url') : undefined;
+    const next = () => {
+      const last = items.at(-1)?.uri;
+      return last && position + 1 + items.length < uris.length
+        ? Buffer.from(JSON.stringify({ version: 1, owner: this.store.owner, scope: this.transport.scope,
+          revision: start.revision, after: last } satisfies Cursor)).toString('base64url') : undefined;
+    };
+    let nextCursor = next();
+    while (Buffer.byteLength(JSON.stringify({ items, nextCursor }), 'utf8') > budget) {
+      if (!items.length) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+      items.pop(); nextCursor = next();
+    }
     return { items, nextCursor };
   }
 }

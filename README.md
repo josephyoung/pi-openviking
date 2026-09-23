@@ -3,7 +3,7 @@
 An independent OpenViking memory extension for pi, tracked by
 [Dano #465](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/465).
 
-**Implementation in progress. Version 0.1.5 is published; governance changes on this branch are not yet released.**
+**Implementation in progress. Version 0.1.6 adds governance services; Dano integration remains in progress.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
 against pi 0.85.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
@@ -241,7 +241,7 @@ and workflow filename `publish.yml`, with permission to publish. No npm token
 is stored in GitHub secrets. The npm trust relationship names this repository
 and workflow and permits direct publishing.
 
-## Governance host API (unreleased)
+## Governance host API
 
 The host constructs one `MemoryGovernanceService(stateStore, ownerClient,
 delivery)` per authenticated owner and trusted scope. Pass it to the extension

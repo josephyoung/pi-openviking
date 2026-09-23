@@ -73,17 +73,41 @@ test('export enforces byte budgets before reading and returns a cursor for the n
   const f = await setup(t);
   const reads = [];
   const transport = { ...f.transport,
-    async readMemoryLimited(uri, maxBytes) { reads.push([uri, maxBytes]); return f.transport.readMemoryLimited(uri, maxBytes); } };
-  const service = new MemoryExportService(f.store, transport, 100, 100);
-  const first = await service.page({ limit: 2, maxBytes: 10 });
+    async memoryDocumentSize(uri) { return uri === f.secondUri ? 800 : f.transport.memoryDocumentSize(uri); },
+    async readMemoryLimited(uri, maxBytes) {
+      reads.push([uri, maxBytes]);
+      if (uri === f.secondUri) {
+        if (maxBytes < 800) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+        return 'x'.repeat(800);
+      }
+      return f.transport.readMemoryLimited(uri, maxBytes);
+    } };
+  const service = new MemoryExportService(f.store, transport, 1000, 1000);
+  const first = await service.page({ limit: 2, maxBytes: 600 });
   assert.deepEqual(first.items.map(item => item.uri), [f.ownUri]);
   assert(first.nextCursor);
-  assert.deepEqual(reads, [[f.ownUri, 10]]);
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0][0], f.ownUri);
   await assert.rejects(service.page({ limit: 1, cursor: first.nextCursor, maxBytes: 10 }), /MEMORY_EXPORT_TOO_LARGE/);
-  assert.deepEqual(reads, [[f.ownUri, 10]]);
+  assert.equal(reads.length, 1);
   await assert.rejects(new MemoryExportService(f.store, { ...f.transport,
     async memoryDocumentSize() { return 1; }, async readMemoryLimited(_uri, maxBytes) {
       assert.equal(maxBytes, 100); throw new Error('MEMORY_EXPORT_TOO_LARGE');
-    } }, 100, 100)
+    } }, 100, 1000)
     .page({ limit: 1 }), /MEMORY_EXPORT_TOO_LARGE/);
+  assert.throws(() => new MemoryExportService(f.store, f.transport, 2097153, 2097153), /INVALID_MEMORY_EXPORT_LIMIT/);
+});
+
+test('export counts source metadata in the serialized page budget', async t => {
+  const f = await setup(t);
+  const delivery = new MemoryDelivery({ store: f.store, transport: { owner: f.owner }, maxPayloadBytes: 8192 });
+  for (let index = 0; index < 8; index++) {
+    const source = { sessionId: `chat-${index}`, entryId: `entry-${index}`, branchId: `entry-${index}`, contentVersion: 'v1' };
+    const operation = await delivery.save(source, 'another source');
+    await f.store.transact(state => {
+      state.operations[operation.id].phase = 'ready'; state.operations[operation.id].memoryUris = [f.ownUri];
+    });
+  }
+  await assert.rejects(new MemoryExportService(f.store, f.transport).page({ limit: 1, maxBytes: 600 }),
+    /MEMORY_EXPORT_TOO_LARGE/);
 });
