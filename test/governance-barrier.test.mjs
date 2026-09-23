@@ -54,7 +54,9 @@ test('durable revocation removes targeted unsent payload, holds unrelated writes
   // Coordinator completion is deliberately represented only by a test transaction.
   // This test proves the interlock, not remote cleanup or a public completion API.
   await reopened.transact(s => { s.governance.jobs[job.id].phase = 'complete'; });
-  assert.equal((await service.save({ ...source('original'), sessionId: 'another-fork' }, 'old fact')).errorCode, 'MEMORY_SOURCE_REVOKED');
+  assert.equal((await service.save({ ...source('original'), sessionId: 'another-fork' }, 'synthetic sensitive original')).errorCode, 'MEMORY_SOURCE_REVOKED');
+  assert.equal((await service.save({ ...source('original'), sessionId: 'another-fork' }, 'unrelated fact')).errorCode,
+    'MEMORY_SOURCE_REVOKED');
   assert.equal((await service.save(source('fresh-explicit'), 'synthetic sensitive original')).phase, 'queued');
   await service.advance(unrelated.id);
   assert.deepEqual(f.mutations, ['create']);
@@ -133,7 +135,7 @@ test('pending global governance does not hold another trusted project writer', a
 
 test('a late append acknowledgement cannot reopen a revoked send phase', async t => {
   const f = await setup(t);
-  const old = await f.service.save({ ...source('original'), sessionId: 'fork' }, 'original copied body');
+  const old = await f.service.save({ ...source('original'), sessionId: 'fork' }, 'synthetic sensitive original');
   await f.service.advance(old.id);
   let started, release;
   const sent = new Promise(resolve => { started = resolve; });

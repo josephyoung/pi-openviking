@@ -65,6 +65,8 @@ export interface Operation {
   phase: DeliveryPhase;
   remoteSessionId: string;
   payload?: string;
+  /** Digest of this operation's single source fact, retained after payload erasure. */
+  factDigest?: string;
   taskId?: string;
   archiveId?: string;
   memoryUris?: string[];
@@ -113,6 +115,8 @@ export interface GovernanceJob {
   collectionRequestIds?: string[];
   /** Hashes of stable entry identity, never deleted plaintext. */
   sourceKeys: string[];
+  /** Entry-level replay fence activated only after pre-barrier collection drains. */
+  replaySourceKeys?: string[];
   /** Transient exact-text plan. Removed after verified selective cleanup. */
   selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
   errorCode?: string;

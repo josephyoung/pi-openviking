@@ -52,6 +52,9 @@ function verify(state: OwnerState, owner: Owner): void {
         || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))
         || !Array.isArray(job.sourceKeys) || new Set(job.sourceKeys).size !== job.sourceKeys.length
         || job.sourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
+        || (job.replaySourceKeys !== undefined && (job.kind === 'clear'
+          || !Array.isArray(job.replaySourceKeys) || new Set(job.replaySourceKeys).size !== job.replaySourceKeys.length
+          || job.replaySourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))))
         || !Array.isArray(job.operationIds) || new Set(job.operationIds).size !== job.operationIds.length
         || job.operationIds.some(operationId => typeof operationId !== 'string'
           || !state.operations[operationId] || state.operations[operationId].scope !== job.scope)
@@ -166,6 +169,9 @@ function verify(state: OwnerState, owner: Owner): void {
     if (operation.reconciliationPhase !== undefined && !['queued', 'session_unknown', 'session_created',
       'message_unknown', 'message_delivered', 'commit_unknown', 'processing'].includes(operation.reconciliationPhase)) {
       throw new Error('INVALID_MEMORY_RECONCILIATION_PHASE');
+    }
+    if (operation.factDigest !== undefined && !/^[a-f0-9]{64}$/.test(operation.factDigest)) {
+      throw new Error('INVALID_MEMORY_OPERATION');
     }
     if (operation.collectionSources !== undefined && (operation.kind !== 'automatic'
       || !Array.isArray(operation.collectionSources) || !operation.collectionSources.length

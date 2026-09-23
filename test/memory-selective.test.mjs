@@ -167,3 +167,83 @@ test('selective governance drains an unrelated pre-barrier collection and filter
   assert.equal((await f.store.read()).operations[receipt.operationIds[0]].phase, 'ready');
   assert.equal(f.docs.get(f.uri), `\n${f.unrelated}`);
 });
+
+test('forgetting one of two facts from the same source keeps the other source current', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-memory-fact-split-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const owner = { accountId: 'account', userId: 'alice' };
+  const store = new FileStateStore({ owner, directory, policyVersion: 'v1' });
+  const delivery = new MemoryDelivery({ store, transport: { owner }, maxPayloadBytes: 8192 });
+  await delivery.enable('v1');
+  await delivery.authorizeCollection({ policyVersion: 'v1', scope: null, boundaries: [] });
+  const session = SessionManager.inMemory('/private/tmp');
+  const lifecycle = new CollectionLifecycle(store);
+  const requestId = await lifecycle.begin(session);
+  const old = 'I like jasmine tea.';
+  const unrelated = 'My meetings are Tuesday.';
+  const entryId = session.appendMessage({ role: 'user', content: `${old} Jasmine tea is my favorite. ${unrelated}`, timestamp: Date.now() });
+  session.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Understood.' }], stopReason: 'stop', timestamp: Date.now() });
+  await lifecycle.settle(requestId, session);
+  const entry = session.getEntry(entryId);
+  const source = { sessionId: session.getSessionId(), entryId, entryTimestamp: entry.timestamp,
+    branchId: session.getLeafId(), contentVersion: createHash('sha256').update(JSON.stringify(entry.message)).digest('hex') };
+  const fact = text => ({ text, source, evidence: [{ source, quote: text }] });
+  const receipt = await delivery.collectSelection({ status: 'ready', requestIds: [requestId],
+    facts: [fact(old), fact(unrelated)] });
+  assert.equal(receipt.status, 'recorded');
+  assert.equal(receipt.operationIds.length, 2);
+  const teaUri = 'viking://user/alice/memories/preferences/tea.md';
+  const meetingUri = 'viking://user/alice/memories/preferences/meetings.md';
+  let teaId, meetingId;
+  await store.transact(state => {
+    for (const id of receipt.operationIds) {
+      const operation = state.operations[id];
+      const tea = JSON.parse(operation.payload).facts[0] === old;
+      operation.phase = 'ready'; operation.memoryUris = [tea ? teaUri : meetingUri]; delete operation.payload;
+      if (tea) teaId = id; else meetingId = id;
+    }
+  });
+  const docs = new Map([[teaUri, 'Favorite tea: jasmine'], [meetingUri, 'Meeting day: Tuesday']]);
+  const removed = [];
+  await store.transact(state => {
+    const prior = state.collectionRequests[requestId];
+    state.collectionRequests['fork-request'] = { ...prior, id: 'fork-request', phase: 'settled',
+      operationIds: undefined, selectionDigest: undefined };
+  });
+  const selective = new MemorySelectiveService(store, { owner, scope: null,
+    async writerSettled() { return true; }, async removeSource(operation) { removed.push(operation.id); },
+    async listMemoryDocuments() { return [...docs.keys()].sort(); },
+    async readMemory(uri) { return docs.get(uri); },
+    async replaceMemory(uri, content) { docs.set(uri, content); },
+    async removeMemory(uri) { docs.delete(uri); },
+  });
+  await store.transact(state => { state.operations[meetingId].memoryUris = [teaUri]; });
+  docs.set(teaUri, 'Favorite tea: jasmine\nMeeting day: Tuesday'); docs.delete(meetingUri);
+  await assert.rejects(selective.begin({ kind: 'forget', memoryUri: teaUri,
+    selectedText: 'Favorite tea: jasmine' }), /MEMORY_TARGET_AMBIGUOUS/);
+  assert.equal((await store.read()).governance, undefined);
+  await store.transact(state => { state.operations[meetingId].memoryUris = [meetingUri]; });
+  docs.set(teaUri, 'Favorite tea: jasmine'); docs.set(meetingUri, 'Meeting day: Tuesday');
+  const job = await selective.begin({ kind: 'forget', memoryUri: teaUri, selectedText: 'Favorite tea: jasmine' });
+  assert.deepEqual(job.operationIds, [teaId]);
+  assert.deepEqual(job.collectionRequestIds, ['fork-request']);
+  const stale = await delivery.collectSelection({ status: 'ready', requestIds: ['fork-request'],
+    facts: [fact(old), fact(unrelated)] });
+  assert.deepEqual(stale, { status: 'recorded', operationIds: [meetingId] });
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  const state = await store.read();
+  assert.deepEqual(removed, [teaId]);
+  assert.equal(state.operations[teaId].phase, 'blocked');
+  assert.equal(state.operations[meetingId].phase, 'ready');
+  assert.equal(docs.get(meetingUri), 'Meeting day: Tuesday');
+  assert.equal(docs.has(teaUri), false);
+  await store.transact(current => {
+    const prior = current.collectionRequests[requestId];
+    current.collectionRequests['late-fork'] = { ...prior, id: 'late-fork', phase: 'settled',
+      operationIds: undefined, selectionDigest: undefined };
+  });
+  const replay = await delivery.collectSelection({ status: 'ready', requestIds: ['late-fork'],
+    facts: [fact('Jasmine tea is my favorite.')] });
+  assert.deepEqual(replay, { status: 'recorded', operationIds: [] });
+  assert.equal(Object.keys((await store.read()).operations).length, 2);
+});

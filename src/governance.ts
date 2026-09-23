@@ -15,18 +15,27 @@ export function governanceCollectionJob(state: OwnerState, request: CollectionRe
 export function governanceHoldsCollection(state: OwnerState, request: CollectionRequest): boolean {
   return governancePending(state, request.scope) && !governanceCollectionJob(state, request);
 }
-function sourceKey(state: OwnerState, scope: string | null, entryId: string): string {
+function sourceKey(state: OwnerState, scope: string | null, entryId: string, factDigest?: string): string {
   // Pi copies entry IDs to forks. Session, branch and rewritten source encoding
   // must not turn an old entry into a fresh authorization to collect it.
-  return createHash('sha256').update(JSON.stringify([state.owner, scope, entryId])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([state.owner, scope, entryId, factDigest ?? null])).digest('hex');
 }
-export function sourceRevoked(state: OwnerState, scope: string | null, entryId: string): boolean {
+export function sourceRevoked(state: OwnerState, scope: string | null, entryId: string, factDigest?: string): boolean {
+  const entryKey = sourceKey(state, scope, entryId);
+  const factKey = factDigest === undefined ? undefined : sourceKey(state, scope, entryId, factDigest);
+  return Object.values(state.governance?.jobs ?? {}).some(job => job.scope === scope
+    && (job.sourceKeys.includes(entryKey) || factKey !== undefined && job.sourceKeys.includes(factKey)));
+}
+export function sourceReplayRevoked(state: OwnerState, scope: string | null, entryId: string): boolean {
   const key = sourceKey(state, scope, entryId);
-  return Object.values(state.governance?.jobs ?? {}).some(job => job.scope === scope && job.sourceKeys.includes(key));
+  return Object.values(state.governance?.jobs ?? {}).some(job => job.scope === scope && job.phase === 'complete'
+    && (job.sourceKeys.includes(key) || job.replaySourceKeys?.includes(key)));
 }
 export function operationRevoked(state: OwnerState, operation: Operation): boolean {
-  return [operation.source, ...(operation.collectionSources ?? []), ...(operation.collectionEvidence ?? []).map(item => item.source)]
-    .some(source => sourceRevoked(state, operation.scope, source.entryId));
+  return Object.values(state.governance?.jobs ?? {}).some(job => job.scope === operation.scope
+    && job.operationIds.includes(operation.id)) || [operation.source, ...(operation.collectionSources ?? []),
+    ...(operation.collectionEvidence ?? []).map(item => item.source)]
+    .some(source => sourceRevoked(state, operation.scope, source.entryId, operation.factDigest));
 }
 export function blockRevokedOperations(state: OwnerState): void {
   for (const operation of Object.values(state.operations)) {
@@ -67,20 +76,36 @@ export class MemoryGovernanceBarrier {
       if (input.kind === 'correct' && !state.authorization.enabled) throw new Error('MEMORY_DISABLED');
       if (governancePending(state, input.scope)) throw new Error('MEMORY_GOVERNANCE_PENDING');
       const scoped = Object.values(state.operations).filter(operation => operation.scope === input.scope);
-      const operations = input.kind === 'clear' ? scoped : scoped.filter(operation =>
-        operation.memoryUris?.includes(input.memoryUri!)
+      const matchingUri = input.kind === 'clear' ? [] : scoped.filter(operation => operation.memoryUris?.includes(input.memoryUri!));
+      const exactSources = input.selectivePlan ? matchingUri.filter(operation =>
+        operation.factDigest === createHash('sha256').update(input.selectivePlan!.selectedText).digest('hex')) : [];
+      if (input.kind !== 'clear' && matchingUri.length > 1 && exactSources.length !== 1) {
+        throw new Error('MEMORY_TARGET_AMBIGUOUS');
+      }
+      const targetIds = new Set((exactSources.length === 1 ? exactSources : matchingUri).map(operation => operation.id));
+      const operations = input.kind === 'clear' ? scoped : scoped.filter(operation => targetIds.has(operation.id)
         || input.selectivePlan && operation.payload?.includes(input.selectivePlan.selectedText));
       if (input.kind !== 'clear' && !operations.length && !input.selectivePlan) throw new Error('MEMORY_TARGET_NOT_FOUND');
-      const entries = new Set((input.kind === 'clear' ? scoped : operations).flatMap(operation => [operation.source.entryId,
-        ...(operation.collectionSources ?? []).map(source => source.entryId),
-        ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]));
+      const entries = new Set<string>();
+      const replayEntries = new Set<string>();
+      const revokedEntryIds = new Set<string>();
+      for (const operation of input.kind === 'clear' ? scoped : operations) {
+        for (const entryId of [operation.source.entryId, ...(operation.collectionSources ?? []).map(source => source.entryId),
+          ...(operation.collectionEvidence ?? []).map(item => item.source.entryId)]) {
+          entries.add(sourceKey(state, input.scope, entryId, input.kind === 'clear' ? undefined : operation.factDigest));
+          if (input.kind !== 'clear') replayEntries.add(sourceKey(state, input.scope, entryId));
+          if (input.kind === 'clear' || !operation.factDigest) revokedEntryIds.add(entryId);
+        }
+      }
       const now = new Date().toISOString();
       const collectionRequestIds: string[] = [];
       for (const request of Object.values(state.collectionRequests ?? {})) {
         if (request.scope !== input.scope) continue;
-        if (input.kind === 'clear') for (const entryId of request.sourceEntries) entries.add(entryId);
+        if (input.kind === 'clear') for (const entryId of request.sourceEntries) {
+          entries.add(sourceKey(state, input.scope, entryId)); revokedEntryIds.add(entryId);
+        }
         if (['running', 'settled'].includes(request.phase)
-          && (input.kind === 'clear' || request.sourceEntries.some(entryId => entries.has(entryId)))) {
+          && (input.kind === 'clear' || request.sourceEntries.some(entryId => revokedEntryIds.has(entryId)))) {
           request.phase = 'discarded';
           delete request.selectionLease;
           request.updatedAt = now;
@@ -95,7 +120,8 @@ export class MemoryGovernanceBarrier {
         operationIds: operations.map(operation => operation.id),
         writerOperationIds: scoped.map(operation => operation.id),
         ...(collectionRequestIds.length ? { collectionRequestIds } : {}),
-        sourceKeys: [...entries].map(entryId => sourceKey(state, input.scope, entryId)),
+        sourceKeys: [...entries],
+        ...(replayEntries.size ? { replaySourceKeys: [...replayEntries] } : {}),
         ...(input.selectivePlan ? { selectivePlan: input.selectivePlan } : {}) };
       state.governance.jobs[job.id] = job;
       blockRevokedOperations(state);

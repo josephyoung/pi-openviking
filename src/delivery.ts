@@ -1,4 +1,4 @@
-import { governancePending, governanceHoldsDelivery, governanceCollectionJob, sourceRevoked, blockRevokedOperations } from './governance.js';
+import { governancePending, governanceHoldsDelivery, governanceCollectionJob, sourceReplayRevoked, sourceRevoked, blockRevokedOperations } from './governance.js';
 import { isTaskFactProjection } from './task-facts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CollectionSelectionResult, SelectedCollectionFact } from './collection-selection.js';
@@ -161,7 +161,7 @@ export class MemoryDelivery {
       throw new Error('INVALID_COLLECTION_SOURCE');
     }
     // Session and branch change on fork; copied entries keep their identity.
-    const sourceKey = collectionSourceKey(this.owner, scope, source);
+    const sourceKey = digest(JSON.stringify([collectionSourceKey(this.owner, scope, source), content]));
     return this.#enqueue(source, content, scope, 'automatic', policy.epoch, policy.collectionRevision, sourceKey);
   }
 
@@ -187,16 +187,10 @@ export class MemoryDelivery {
         throw new Error('INVALID_COLLECTION_SELECTION');
       }
       const governance = governanceCollectionJob(state, first);
-      if (governancePending(state, first.scope) && !governance
-        || selected.facts.some(fact => fact?.source && sourceRevoked(state, first.scope, fact.source.entryId)
-          || fact?.evidence?.some(item => item?.source && sourceRevoked(state, first.scope, item.source.entryId)))) {
+      if (governancePending(state, first.scope) && !governance) {
         return { status: 'blocked', errorCode: 'MEMORY_GOVERNANCE_PENDING' };
       }
-      // A selector started before the barrier may return afterward. Keep its
-      // unrelated facts, but never enqueue the exact fact being governed.
       const selectedText = governance?.selectivePlan?.selectedText;
-      if (selectedText) selected.facts = selected.facts.filter(fact =>
-        typeof fact?.text !== 'string' || !fact.text.includes(selectedText) && !selectedText.includes(fact.text));
       const sourceIds = new Set(requests.flatMap(request => request!.sourceEntries));
       const validSource = (source: CollectionSource) => isCollectionSource(source)
         && source.sessionId === first.sessionId && sourceIds.has(source.entryId);
@@ -216,7 +210,13 @@ export class MemoryDelivery {
           || fact.evidence[0].quote !== fact.text || !sameSource(fact.source, fact.evidence.at(-1)!.source)) {
           throw new Error('INVALID_COLLECTION_SELECTION');
         }
-        const key = collectionSourceKey(state.owner, first.scope, fact.source);
+        // A source can carry several independent facts. Give each one a stable
+        // receipt and remote Session so governance can revoke only its target.
+        if (sourceReplayRevoked(state, first.scope, fact.source.entryId)
+          || sourceRevoked(state, first.scope, fact.source.entryId, digest(fact.text))
+          || fact.evidence.some(item => sourceRevoked(state, first.scope, item.source.entryId, digest(fact.text)))
+          || selectedText && (fact.text.includes(selectedText) || selectedText.includes(fact.text))) continue;
+        const key = digest(JSON.stringify([collectionSourceKey(state.owner, first.scope, fact.source), fact.text]));
         const group = groups.get(key) ?? { source: fact.source, facts: [], texts: [], payloadDigest: '' };
         if (!group.texts.includes(fact.text)) { group.texts.push(fact.text); group.facts.push(fact); }
         groups.set(key, group);
@@ -265,29 +265,26 @@ export class MemoryDelivery {
         operationIds.add(receipt.operationId);
         return false;
       });
+      if (pending.some(([, group]) => Buffer.byteLength(JSON.stringify({ type: 'authorized_memory_facts', facts: group.texts }))
+        > this.#maxPayloadBytes)) return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_INPUT_LIMIT' };
       const now = new Date().toISOString();
-      if (pending.length) {
-        // Only necessary fact text is sent. Confirmation quotes remain hashed
-        // provenance, not another raw conversation copy or provider instruction.
-        const payload = JSON.stringify({ type: 'authorized_memory_facts',
-          facts: [...new Set(pending.flatMap(([, group]) => group.texts))] });
-        if (Buffer.byteLength(payload) > this.#maxPayloadBytes) {
-          return { status: 'blocked', errorCode: 'MEMORY_COLLECTION_INPUT_LIMIT' };
-        }
-        const id = digest(JSON.stringify([state.owner, first.scope, 'collection-batch',
-          first.authorizationEpoch, first.collectionRevision, selectionDigest]));
+      for (const [key, group] of pending) {
+        // Confirmation quotes remain hashed provenance, not another raw copy.
+        const payload = JSON.stringify({ type: 'authorized_memory_facts', facts: group.texts });
+        const id = digest(JSON.stringify([state.owner, first.scope, 'collection-fact',
+          first.authorizationEpoch, first.collectionRevision, key, group.payloadDigest]));
         if (state.operations[id]) throw new Error('MEMORY_COLLECTION_RECEIPT_MISSING');
-        const evidence = pending.flatMap(([, group]) => group.facts.flatMap(fact => fact.evidence
-          .map(item => ({ source: { ...item.source }, quoteDigest: digest(item.quote), ...(fact.projection ? { projection: { ...fact.projection } } : {}) }))));
+        const evidence = group.facts.flatMap(fact => fact.evidence.map(item => ({ source: { ...item.source },
+          quoteDigest: digest(item.quote), ...(fact.projection ? { projection: { ...fact.projection } } : {}) })));
         const operation: Operation = { id, owner: state.owner, scope: first.scope,
-          source: { ...pending[0][1].source }, kind: 'automatic', authorizationEpoch: first.authorizationEpoch,
-          collectionRevision: first.collectionRevision, collectionSources: pending.map(([, group]) => ({ ...group.source })),
+          source: { ...group.source }, kind: 'automatic', authorizationEpoch: first.authorizationEpoch,
+          collectionRevision: first.collectionRevision, collectionSources: [{ ...group.source }],
           collectionEvidence: evidence, createdAt: now, updatedAt: now, phase: 'queued',
-          remoteSessionId: randomUUID(), payload };
+          remoteSessionId: randomUUID(), payload, factDigest: digest(group.texts[0]) };
         state.operations[id] = operation;
         if (governance && !governance.writerOperationIds.includes(id)) governance.writerOperationIds.push(id);
         state.collectedSources ??= {};
-        for (const [key, group] of pending) state.collectedSources[key] = { operationId: id, payloadDigest: group.payloadDigest };
+        state.collectedSources[key] = { operationId: id, payloadDigest: group.payloadDigest };
         operationIds.add(id);
       }
       for (const request of requests) {
@@ -313,7 +310,9 @@ export class MemoryDelivery {
     validateScope(scope);
     return this.#store.transact(state => {
       if (governancePending(state, scope)) return { phase: 'blocked', errorCode: 'MEMORY_GOVERNANCE_PENDING' };
-      if (sourceRevoked(state, scope, source.entryId)) return { phase: 'blocked', errorCode: 'MEMORY_SOURCE_REVOKED' };
+      const factDigest = digest(content);
+      if (sourceReplayRevoked(state, scope, source.entryId)
+        || sourceRevoked(state, scope, source.entryId, factDigest)) return { phase: 'blocked', errorCode: 'MEMORY_SOURCE_REVOKED' };
       if (!state.authorization.enabled) return { phase: 'blocked', errorCode: 'MEMORY_DISABLED' };
       if (expectedEpoch !== undefined && expectedEpoch !== state.authorization.epoch) {
         return { phase: 'blocked', errorCode: 'MEMORY_CONFIRM_AGAIN' };
@@ -332,7 +331,7 @@ export class MemoryDelivery {
         return structuredClone(state.operations[receipt.operationId]);
       }
       const identity: unknown[] = [state.owner, scope, source, state.authorization.epoch];
-      if (kind === 'automatic') identity.push(kind, collectionRevision);
+      if (kind === 'automatic') identity.push(kind, collectionRevision, factDigest);
       const id = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
       const previous = state.operations[id];
       if (previous) {
@@ -343,7 +342,7 @@ export class MemoryDelivery {
       const operation: Operation = {
         id, owner: state.owner, source: { ...source }, scope, kind,
         authorizationEpoch: state.authorization.epoch, ...(collectionRevision === undefined ? {} : { collectionRevision }), createdAt: now, updatedAt: now,
-        phase: 'queued', remoteSessionId: randomUUID(), payload: content,
+        phase: 'queued', remoteSessionId: randomUUID(), payload: content, factDigest,
       };
       state.operations[id] = operation;
       if (sourceKey !== undefined) {

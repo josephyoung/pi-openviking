@@ -55,8 +55,8 @@ test('the actual input/selector/handoff pipeline coalesces two completed request
   const scheduler = f.start({ selector, workTimeoutMs: 4000, leaseMs: 6000 });
   await until(() => processed(f, ids)); await scheduler.stop();
   const state = await f.store.read();
-  assert.equal(models, 1); assert.equal(Object.keys(state.operations).length, 1); assert.equal(f.wakes(), 1);
-  assert.equal(Object.values(state.operations)[0].collectionSources.length, 2);
+  assert.equal(models, 1); assert.equal(Object.keys(state.operations).length, 2); assert.equal(f.wakes(), 1);
+  assert(Object.values(state.operations).every(operation => operation.collectionSources.length === 1));
   assert(ids.every(id => !state.collectionRequests[id].selectionLease));
 });
 
