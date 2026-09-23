@@ -262,9 +262,33 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   async readMemory(uri: string): Promise<string> {
-    const target = this.#memoryUri(uri);
+    const target = this.#documentUri(uri);
     await this.verifyIdentity();
     return this.#sdk.read(target);
+  }
+
+  /** Enumerate only document URIs under this credential's trusted scope. */
+  async listMemoryDocuments(): Promise<string[]> {
+    await this.verifyIdentity();
+    let entries: Record<string, unknown>[];
+    try { entries = (await this.#sdk.tree(this.#root, { nodeLimit: 10001 })) as Record<string, unknown>[]; }
+    catch (error) {
+      if (isOpenVikingError(error) && error.statusCode === 404) return [];
+      throw error;
+    }
+    if (!Array.isArray(entries) || entries.length >= 10001) throw new Error('MEMORY_EXPORT_TOO_LARGE');
+    const uris: string[] = [];
+    for (const entry of entries) {
+      const node = object(entry);
+      if (node.isDir === true) continue;
+      if (node.isDir !== false || typeof node.uri !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+      if (node.uri.endsWith('.md') && !node.uri.slice(this.#root.length + 1).split('/').some(segment => segment.startsWith('.'))) {
+        uris.push(this.#documentUri(node.uri));
+      } else {
+        this.#memoryUri(node.uri);
+      }
+    }
+    return [...new Set(uris)].sort();
   }
 
   async recall(query: string, limit: number, signal?: AbortSignal): Promise<RecalledMemory[]> {
