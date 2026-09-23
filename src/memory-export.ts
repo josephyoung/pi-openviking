@@ -67,6 +67,7 @@ export class MemoryExportService {
     const budget = input.maxBytes ?? this.maxPageBytes;
     if (!Number.isSafeInteger(budget) || budget < 1 || budget > this.maxPageBytes) throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
     const start = await this.store.read();
+    if (start.retirement) throw new Error('MEMORY_RETIRED');
     if (governancePending(start, this.transport.scope)) throw new Error('MEMORY_GOVERNANCE_PENDING');
     const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor);
     if (cursor && (!sameOwner(cursor.owner, this.store.owner) || cursor.scope !== this.transport.scope
@@ -114,7 +115,7 @@ export class MemoryExportService {
           || !Number.isFinite(Date.parse(source.createdAt))) throw new Error('INVALID_MEMORY_SOURCE');
       }
       const revisions = Object.values(start.governance?.jobs ?? {}).filter(job =>
-        job.phase === 'complete' && job.scope === this.transport.scope
+        job.phase === 'complete' && !job.supersededBy && job.scope === this.transport.scope
         && (job.kind === 'correct' || job.kind === 'forget') && job.memoryUris.includes(uri))
         .map(job => ({ kind: job.kind as 'correct' | 'forget', revision: job.revision,
           createdAt: job.createdAt, completedAt: job.completedAt }));

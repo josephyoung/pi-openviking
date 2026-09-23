@@ -63,7 +63,7 @@ export interface MemoryExtensionOptions {
     wake(): void;
     onError?(code: 'MEMORY_COLLECTION_LIFECYCLE_UNAVAILABLE'): void;
   };
-  governance?: Pick<MemoryGovernanceService, 'correct' | 'forget' | 'clear' | 'exportPage' | 'status'> & { wake(): void };
+  governance?: Pick<MemoryGovernanceService, 'owner' | 'scope' | 'correct' | 'forget' | 'clear' | 'exportPage' | 'status'> & { wake(): void };
 }
 
 function governanceResult(details: Record<string, unknown>) {
@@ -76,7 +76,9 @@ function governanceError(error: unknown) {
 }
 function governanceReceipt(receipt: GovernanceReceipt) {
   return governanceResult({ ...receipt, message: receipt.status === 'complete'
-    ? '治理操作已验证完成。' : '治理操作正在处理，暂不可声称已纠正、遗忘或清空。' });
+    ? '治理操作已验证完成。' : receipt.status === 'superseded'
+      ? '原操作已由整范围清空替代，不可声称原纠正或遗忘已单独完成。'
+      : '治理操作正在处理，暂不可声称已纠正、遗忘或清空。' });
 }
 
 const registered = new WeakSet<ExtensionAPI>();
@@ -91,6 +93,8 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
     || ('scope' in options.client && options.client.scope !== scope)) {
     throw new Error('MEMORY_SCOPE_MISMATCH');
   }
+  if (options.governance && (!sameOwner(options.owner, options.governance.owner)
+    || options.governance.scope !== scope)) throw new Error('MEMORY_GOVERNANCE_SCOPE_MISMATCH');
   const policy = { ...options.policy };
   if (![policy.recallTimeoutMs, policy.recallTokenBudget, policy.recallLimit, policy.maxPayloadBytes]
     .every(value => Number.isSafeInteger(value) && value > 0) || !Number.isFinite(policy.minimumScore)) {

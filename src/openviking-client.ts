@@ -196,6 +196,51 @@ export class OwnerMemoryClient implements DeliveryTransport {
     return ['completed', 'failed', 'cancelled'].includes(String(task.status));
   }
 
+  /** Account retirement must drain writers from every trusted peer scope. */
+  writerSettledAny(operation: Readonly<Operation>): Promise<boolean> {
+    if (!sameOwner(operation.owner, this.owner)) throw new Error('MEMORY_OWNER_MISMATCH');
+    if (operation.scope === this.scope) return this.writerSettled(operation);
+    const scoped = new OwnerMemoryClient({ owner: this.owner, baseUrl: this.#baseUrl,
+      apiKey: this.#key, scope: operation.scope, timeoutMs: this.#timeoutMs });
+    return scoped.writerSettled(operation);
+  }
+
+  /** USER keys cannot remove the namespace root. Remove verified content
+   * subtrees and every global source session; peers include scoped sessions. */
+  async clearOwnerData(): Promise<void> {
+    await this.verifyIdentity();
+    const sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
+      timeout: this.#timeoutMs, fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
+    const root = `viking://user/${this.owner.userId}`;
+    const sessions = `${root}/sessions`;
+    const seenFirst = new Set<string>();
+    while (true) {
+      let entries: unknown[];
+      try { entries = await sdk.list(sessions, { nodeLimit: 500 }); }
+      catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; entries = []; }
+      if (!Array.isArray(entries) || entries.length > 500) throw new Error('INVALID_MEMORY_RESPONSE');
+      if (!entries.length) break;
+      const first = object(entries[0]).uri;
+      if (typeof first !== 'string') throw new Error('INVALID_MEMORY_RESPONSE');
+      if (seenFirst.has(first)) throw new Error('MEMORY_SOURCE_DELETION_UNCONFIRMED');
+      seenFirst.add(first);
+      for (const entry of entries) {
+        const node = object(entry);
+        const id = identifier(node.name);
+        if (node.uri !== `${sessions}/${id}` || node.isDir !== true) throw new Error('INVALID_MEMORY_RESPONSE');
+        try { await sdk.deleteSession(id); }
+        catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+      }
+    }
+    for (const target of [`${root}/memories`, `${root}/peers`]) {
+      try { await sdk.remove(target, { recursive: true, wait: true, timeout: Math.ceil(this.#timeoutMs / 1000) }); }
+      catch (error) { if (!isOpenVikingError(error) || error.statusCode !== 404) throw error; }
+      try { await sdk.stat(target); }
+      catch (error) { if (isOpenVikingError(error) && error.statusCode === 404) continue; throw error; }
+      throw new Error('MEMORY_CLEAR_UNCONFIRMED');
+    }
+  }
+
   /** Clear only the client-bound memory tree, including its derived indexes. */
   async clearMemoryScope(): Promise<void> {
     await this.verifyIdentity();

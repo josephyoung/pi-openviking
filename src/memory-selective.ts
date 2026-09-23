@@ -46,6 +46,7 @@ export class MemorySelectiveService {
   /** Resolve ambiguity before the durable barrier; the coordinator rechecks after draining. */
   async begin(input: { kind: 'forget' | 'correct'; memoryUri: string;
     selectedText: string; replacementText?: string }): Promise<GovernanceJob> {
+    if ((await this.store.read()).retirement) throw new Error('MEMORY_RETIRED');
     const uri = this.#document(input?.memoryUri);
     const selectedText = input?.selectedText;
     const replacementText = input?.kind === 'forget' ? '' : input?.replacementText;
@@ -73,6 +74,7 @@ export class MemorySelectiveService {
     }
     await this.store.withGovernanceLock(async () => {
       const state = await this.store.read();
+      if (state.retirement) throw new Error('MEMORY_RETIRED');
       const job = state.governance?.jobs[jobId];
       const plan = job?.selectivePlan;
       const operation = state.operations[operationId];
@@ -174,7 +176,7 @@ export class MemorySelectiveService {
           // until the owner confirms whole-scope clear.
           state = await this.store.read(signal);
           job = state.governance!.jobs[id];
-          if (job.operationIds.some(operationId => {
+          if (job.writerOperationIds.some(operationId => {
             const operation = state.operations[operationId];
             return operation.phase === 'failed' && operation.errorCode === 'MEMORY_EXTRACTION_FAILED'
               && !operation.memoryUris?.length;

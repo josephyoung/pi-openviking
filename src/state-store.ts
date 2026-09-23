@@ -34,13 +34,10 @@ function verify(state: OwnerState, owner: Owner): void {
     throw new Error('INVALID_MEMORY_STATE');
   }
   if (state.retirement !== undefined && (!state.retirement
+    || !/^[a-f0-9-]{36}$/.test(state.retirement.id)
     || !['requested', 'remote_cleared'].includes(state.retirement.phase)
     || !Number.isFinite(Date.parse(state.retirement.requestedAt))
-    || state.authorization.enabled || state.authorization.automaticCollection
-    || (state.retirement.clearJobId !== undefined && (!/^[a-f0-9-]{36}$/.test(state.retirement.clearJobId)
-      || state.governance?.jobs[state.retirement.clearJobId]?.kind !== 'clear'
-      || state.retirement.phase === 'remote_cleared'
-        && state.governance?.jobs[state.retirement.clearJobId]?.phase !== 'complete')))) {
+    || state.authorization.enabled || state.authorization.automaticCollection)) {
     throw new Error('INVALID_MEMORY_RETIREMENT');
   }
   if (state.governance !== undefined) {
@@ -59,6 +56,12 @@ function verify(state: OwnerState, owner: Owner): void {
         || (job.scope !== null && (typeof job.scope !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(job.scope)))
         || (job.errorCode !== undefined && (typeof job.errorCode !== 'string' || !/^MEMORY_[A-Z_]+$/.test(job.errorCode)))
         || (job.completedAt !== undefined && (job.phase !== 'complete' || !Number.isFinite(Date.parse(job.completedAt))))
+        || (job.supersededBy !== undefined && (job.kind === 'clear' || job.phase !== 'complete'
+          || state.governance?.jobs[job.supersededBy]?.kind !== 'clear'
+          || state.governance.jobs[job.supersededBy].scope !== job.scope
+          || state.governance.jobs[job.supersededBy].revision <= job.revision))
+        || (job.cancelledByRetirement !== undefined && (job.cancelledByRetirement !== true
+          || job.phase !== 'complete' || state.retirement?.phase !== 'remote_cleared'))
         || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))
         || !Array.isArray(job.sourceKeys) || new Set(job.sourceKeys).size !== job.sourceKeys.length
         || job.sourceKeys.some(key => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))

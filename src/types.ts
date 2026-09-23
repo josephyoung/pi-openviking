@@ -121,6 +121,9 @@ export interface GovernanceJob {
   writerClassifications?: Record<string, 'target' | 'unrelated'>;
   /** Owner-reviewed exact derivative text to remove from a shared target document. */
   mergedResolutions?: Record<string, string>;
+  /** A confirmed whole-scope clear replaces this unfinished selective job. */
+  supersededBy?: string;
+  cancelledByRetirement?: boolean;
   /** Transient exact-text plan. Removed after verified selective cleanup. */
   selectivePlan?: { memoryUri: string; selectedText: string; replacementText: string };
   errorCode?: string;
@@ -134,7 +137,7 @@ export interface OwnerState {
   revision: number;
   authorization: Authorization;
   /** Durable account retirement fence; only removed after remote clear and host cleanup. */
-  retirement?: { phase: 'requested' | 'remote_cleared'; requestedAt: string; clearJobId?: string };
+  retirement?: { id: string; phase: 'requested' | 'remote_cleared'; requestedAt: string };
   operations: Record<string, Operation>;
   governance?: { revision: number; jobs: Record<string, GovernanceJob> };
   /** Source receipts contain no conversation text and survive consent changes. */

@@ -243,6 +243,21 @@ test('failed target extraction without URI lineage requires confirmed scope clea
   assert(f.docs.get(f.uri).includes(f.old));
 });
 
+test('older failed extraction with erased payload also prevents an unverifiable selective success', async t => {
+  const f = await setup(t);
+  const older = await f.delivery.save({ sessionId: 'chat', entryId: 'older-failed',
+    branchId: 'older-failed', contentVersion: 'v1' }, 'potential old derivative');
+  await f.store.transact(state => {
+    state.operations[older.id].phase = 'failed';
+    state.operations[older.id].errorCode = 'MEMORY_EXTRACTION_FAILED';
+    delete state.operations[older.id].payload;
+  });
+  const job = await f.selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(await f.selective.advance(job.id), {
+    status: 'pending', errorCode: 'MEMORY_GOVERNANCE_CLEAR_REQUIRED',
+  });
+});
+
 test('an accepted paraphrase merged into the selected document stays pending for review', async t => {
   const f = await setup(t);
   const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'merged-paraphrase',

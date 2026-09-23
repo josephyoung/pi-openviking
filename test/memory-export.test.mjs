@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { FileStateStore, MemoryDelivery, MemoryGovernanceBarrier, MemoryExportService } from '../dist/host.js';
 
 async function setup(t) {
@@ -67,6 +68,20 @@ test('pending governance suppresses export, including paused management', async 
   assert.equal((await exportService.page({ limit: 10 })).items.length, 2);
   await new MemoryGovernanceBarrier(f.store).begin({ kind: 'clear', scope: null });
   await assert.rejects(exportService.page({ limit: 10 }), /MEMORY_GOVERNANCE_PENDING/);
+});
+
+test('retirement marker blocks export before a clear job exists', async t => {
+  const f = await setup(t);
+  let listed = false;
+  const service = new MemoryExportService(f.store, { ...f.transport,
+    async listMemoryDocuments() { listed = true; return [f.ownUri]; } });
+  await f.store.transact(state => {
+    state.retirement = { id: randomUUID(), phase: 'requested', requestedAt: new Date().toISOString() };
+    state.authorization.enabled = false;
+    state.authorization.automaticCollection = false;
+  });
+  await assert.rejects(service.page({ limit: 1 }), /MEMORY_RETIRED/);
+  assert.equal(listed, false);
 });
 
 test('export enforces byte budgets before reading and returns a cursor for the next fitting document', async t => {

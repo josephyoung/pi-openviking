@@ -82,6 +82,7 @@ export class MemoryGovernanceBarrier {
     }
     input = structuredClone(input);
     return this.store.transact(state => {
+      if (state.retirement) throw new Error('MEMORY_RETIRED');
       if (input.kind === 'correct' && !state.authorization.enabled) throw new Error('MEMORY_DISABLED');
       const pending = Object.values(state.governance?.jobs ?? {}).find(job =>
         job.scope === input.scope && job.phase !== 'complete');
@@ -140,6 +141,7 @@ export class MemoryGovernanceBarrier {
         ...(replayEntries.size ? { replaySourceKeys: [...replayEntries] } : {}),
         ...(input.selectivePlan ? { selectivePlan: input.selectivePlan } : {}) };
       state.governance.jobs[job.id] = job;
+      if (pending) pending.supersededBy = job.id;
       blockRevokedOperations(state);
       return structuredClone(job);
     });
@@ -149,6 +151,7 @@ export class MemoryGovernanceBarrier {
   async classifyWriter(jobId: string, operationId: string, decision: 'target' | 'unrelated'): Promise<void> {
     if (!['target', 'unrelated'].includes(decision)) throw new Error('INVALID_MEMORY_GOVERNANCE');
     await this.store.transact(state => {
+      if (state.retirement) throw new Error('MEMORY_RETIRED');
       const job = state.governance?.jobs[jobId];
       const operation = state.operations[operationId];
       if (!job || job.kind === 'clear' || job.phase !== 'draining' || !job.selectivePlan
