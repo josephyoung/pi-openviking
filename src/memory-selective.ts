@@ -340,6 +340,20 @@ export class MemorySelectiveService {
             operation.updatedAt = new Date().toISOString();
           }
           for (const operationId of live.writerOperationIds) delete current.operations[operationId].payload;
+          // A later correction can move a document that an earlier completed
+          // job still names. Keep its revision and preserved-source lineage on
+          // the surviving URI, otherwise state validation prevents recovery.
+          for (const previous of Object.values(current.governance!.jobs)) {
+            if (previous.id === id || previous.phase !== 'complete') continue;
+            previous.memoryUris = previous.memoryUris.map(uri => relocated[uri] ?? uri)
+              .filter(uri => surviving.has(uri));
+            if (previous.preservedUris) {
+              const retained = previous.preservedUris.map(uri => relocated[uri] ?? uri)
+                .filter(uri => surviving.has(uri));
+              if (retained.length) previous.preservedUris = retained;
+              else delete previous.preservedUris;
+            }
+          }
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
           const retained = [...preserved.keys()].filter(uri => uri !== plan.memoryUri)
             .map(uri => relocated[uri] ?? uri);

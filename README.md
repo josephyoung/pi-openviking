@@ -67,7 +67,9 @@ supervisor; hosts must still provide their own worker tool policy.
   fact; export marks their original source as preserved after correction.
   If a narrower selected phrase could leave the same fact in the document
   remainder (for example, in an extracted title), governance rejects it before
-  mutation so the owner can select and replace the complete passage.
+  mutation so the owner can select and replace the complete passage. Later
+  corrections update earlier completed jobs' document references when a
+  retained document moves again.
 - Pause suppresses unsent operations and removes their pending bodies. Enabling
   again does not replay those operations or authorize automatic collection.
 
