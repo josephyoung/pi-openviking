@@ -107,7 +107,7 @@ test('explicit save rejects a model-mutated fact before creating an operation', 
   const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
     message: { role: 'user', content: '请记住：验收专用灯塔代号是云汀201。' } }] } };
   const save = content => f.tools.get('memory_save').execute('call-id', { content }, undefined, undefined, ctx);
-  const mutated = await save('验收专用灯塔代号是云汀2020');
+  const mutated = await save('验收专用灯塔代号是云汀9999');
   assert.equal(mutated.details.status, 'blocked');
   assert.equal(mutated.details.errorCode, 'MEMORY_SOURCE_MISMATCH');
   assert.match(mutated.details.message, /当前用户消息/);
@@ -117,13 +117,13 @@ test('explicit save rejects a model-mutated fact before creating an operation', 
   assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
 });
 
-test('explicit save uses the unique source-aligned digit instead of the model copy', async t => {
+test('explicit save uses the unique source-aligned number instead of the model copy', async t => {
   const f = await setup(t);
   await f.service.enable('v1');
   const timestamp = new Date(Date.now() + 1).toISOString();
   const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
     message: { role: 'user', content: '请记住：验收专用灯塔代号是云汀201。' } }] } };
-  const result = await f.tools.get('memory_save').execute('call-id', { content: '验收专用灯塔代号是云汀202' }, undefined, undefined, ctx);
+  const result = await f.tools.get('memory_save').execute('call-id', { content: '验收专用灯塔代号是云汀2020' }, undefined, undefined, ctx);
   assert.equal(result.details.status, 'queued');
   assert.equal(result.details.sourceCorrected, true);
   const operations = Object.values((await f.stateStore.read()).operations);

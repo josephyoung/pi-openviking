@@ -187,7 +187,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
             sourceCorrected: aligned.corrected,
             remembered: result.phase === 'ready',
             message: aligned.corrected && !['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
-              ? '已从当前用户原文校正模型的一个数字复制错误。只告知处理状态，不复述模型候选事实；queued/processing 尚未记住。'
+              ? '已从当前用户原文校正模型的数字串复制错误。只告知处理状态，不复述模型候选事实；queued/processing 尚未记住。'
               : result.phase === 'ready'
               ? '长期记忆已完成处理，可以告知用户已记住。'
               : ['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
