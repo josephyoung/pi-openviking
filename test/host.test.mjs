@@ -110,6 +110,8 @@ test('explicit save rejects a model-mutated fact before creating an operation', 
   const mutated = await save('验收专用灯塔代号是云汀2020');
   assert.equal(mutated.details.status, 'blocked');
   assert.equal(mutated.details.errorCode, 'MEMORY_SOURCE_MISMATCH');
+  assert.match(mutated.details.message, /重新调用 memory_save/);
+  assert.match(mutated.details.message, /当前用户消息/);
   assert.deepEqual((await f.stateStore.read()).operations, {});
   const exact = await save('验收专用灯塔代号是云汀201');
   assert.equal(exact.details.status, 'queued');
