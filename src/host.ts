@@ -174,7 +174,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           const exact = typeof params.content === 'string' ? params.content.trim() : '';
           if (!exact || !sourceTexts.some(text => text.normalize('NFC').includes(exact.normalize('NFC')))) {
             const details = { status: 'blocked', errorCode: 'MEMORY_SOURCE_MISMATCH',
-              message: '保存内容与当前用户消息的原文不一致。请用户重新发送要保存的准确事实；不得声称已记住。' };
+              message: '保存内容与当前用户消息的原文不一致，未创建保存任务。请核对当前用户消息，逐字复制其中明确要求保存的事实，重新调用 memory_save；只有原文不明确或不在当前消息中时才请用户重发。不得猜测、改写或声称已记住。' };
             return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
           }
           const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, params.content),
