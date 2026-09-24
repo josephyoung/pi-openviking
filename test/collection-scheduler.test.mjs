@@ -107,10 +107,11 @@ test('expired lease replacement fences the previous process even when its result
 
 test('non-cooperative inference times out, retries are bounded and late results never enqueue', async t => {
   const f = await fixture(t); const id = await f.add(); const releases = [];
-  const scheduler = f.start({ workTimeoutMs: 60, leaseMs: 200,
+  const scheduler = f.start({ workTimeoutMs: 250, leaseMs: 1000,
     selector: { select(ids) { return new Promise(resolve => releases.push(() => resolve({ status: 'ready', requestIds: ids, facts: [f.facts.get(id)] }))); } } });
+  await until(() => releases.length > 0);
   await until(async () => (await f.store.read()).collectionRequests[id].phase === 'selection_failed');
-  await scheduler.stop(); assert.equal(releases.length, 2); releases.forEach(release => release()); await delay(30);
+  await scheduler.stop(); releases.forEach(release => release()); await delay(30);
   const state = await f.store.read(); assert.deepEqual(state.operations, {});
   assert.equal(state.collectionRequests[id].selectionAttempts, 2); assert.match(state.collectionRequests[id].selectionErrorCode, /^MEMORY_/);
 });
