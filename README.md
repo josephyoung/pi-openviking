@@ -3,7 +3,7 @@
 An independent OpenViking memory extension for pi, tracked by
 [Dano #465](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/465).
 
-**Implementation in progress. Version 0.1.6 adds governance services; Dano integration remains in progress.**
+**Implementation and Dano release acceptance remain in progress.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
 against pi 0.85.1. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
@@ -43,6 +43,10 @@ supervisor; hosts must still provide their own worker tool policy.
 - Bounded, quoted recall in a non-persisted custom context message, with a host
   tokenizer, per-request cache and pause/lifecycle invalidation.
 - Default-off consent, explicit durable enqueue and stable source deduplication.
+- Explicit saves accept only a verbatim span of the current user message.
+  A model-generated rewrite of a name or number is blocked before enqueue and
+  the tool result asks the assistant to request the exact fact again. Saving a
+  summary of older context likewise requires a fresh, explicit user message.
 - A dedicated remote Session per save operation, with persisted causal phases.
   If session creation failed before the remote accepted it, the scheduler may
   retry only that empty Session with its original stable ID after a USER-scoped

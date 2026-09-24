@@ -155,8 +155,8 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
 
     pi.registerTool({
       name: 'memory_save', label: '记住',
-      description: '仅当用户明确要求记住时保存稳定事实或偏好。默认关闭；blocked 时提示先在设置启用并重新确认。queued/processing 不是已记住。不得保存凭证或模型推测。',
-      parameters: Type.Object({ content: Type.String({ description: '用户明确授权保存的必要事实。' }) }),
+      description: '仅当用户明确要求记住时保存稳定事实或偏好。content 必须逐字摘自当前用户消息，不能改写数字、名称或推断事实；需要总结旧上下文时请用户重新确认准确原文。默认关闭；blocked 时提示原因。queued/processing 不是已记住。不得保存凭证或模型推测。',
+      parameters: Type.Object({ content: Type.String({ description: '从当前用户消息逐字复制的必要事实，不要改写。' }) }),
       async execute(_toolCallId, params, _signal, _update, ctx) {
         try {
           await options.assertToolIsolation();
@@ -166,6 +166,15 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           const authorization = (await options.stateStore.read()).authorization;
           if (!authorization.enabled || Date.parse(entry.timestamp) < Date.parse(authorization.effectiveAt)) {
             const details = { status: 'blocked', errorCode: authorization.enabled ? 'MEMORY_CONFIRM_AGAIN' : 'MEMORY_DISABLED' };
+            return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
+          }
+          const sourceTexts = typeof entry.message.content === 'string'
+            ? [entry.message.content]
+            : entry.message.content.filter(part => part.type === 'text').map(part => part.text);
+          const exact = typeof params.content === 'string' ? params.content.trim() : '';
+          if (!exact || !sourceTexts.some(text => text.normalize('NFC').includes(exact.normalize('NFC')))) {
+            const details = { status: 'blocked', errorCode: 'MEMORY_SOURCE_MISMATCH',
+              message: '保存内容与当前用户消息的原文不一致。请用户重新发送要保存的准确事实；不得声称已记住。' };
             return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
           }
           const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, params.content),
