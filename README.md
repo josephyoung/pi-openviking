@@ -248,6 +248,12 @@ on pi 0.82.1 and again with a fresh account on pi 0.85.1. See
 [the acceptance record](docs/acceptance-2026-09-18.md). Interactive TUI screenshots
 and Dano's real in-app Browser gate remain outstanding.
 
+For explicit `memory_save`, the host uses the current user message as the source
+of truth. It accepts an exact quote or repairs one uniquely aligned ASCII
+digit copied incorrectly by the model; ambiguous matches and other rewrites
+are blocked before creating a save operation. A queued receipt still does not
+mean the memory is ready.
+
 The exact peer moved to pi 0.85.1 because pi 0.82.1's bundled shrinkwrap kept
 vulnerable transitive dependencies despite root overrides. The 0.85.1 install
 resolves undici 8.9.0 and brace-expansion 5.0.9; `npm audit` currently reports

@@ -1,5 +1,6 @@
 import { governancePending } from './governance.js';
 import { explicitSaveSource } from './explicit-save-source.js';
+import { sourceAlignedContent } from './source-aligned-content.js';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { CollectionSessionRegistry } from './collection-sessions.js';
@@ -171,20 +172,23 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           const sourceTexts = typeof entry.message.content === 'string'
             ? [entry.message.content]
             : entry.message.content.filter(part => part.type === 'text').map(part => part.text);
-          const exact = typeof params.content === 'string' ? params.content.trim() : '';
-          if (!exact || !sourceTexts.some(text => text.normalize('NFC').includes(exact.normalize('NFC')))) {
+          const aligned = sourceAlignedContent(sourceTexts, params.content);
+          if (!aligned) {
             const details = { status: 'blocked', errorCode: 'MEMORY_SOURCE_MISMATCH',
-              message: '保存内容与当前用户消息的原文不一致，未创建保存任务。请核对当前用户消息，逐字复制其中明确要求保存的事实，重新调用 memory_save；只有原文不明确或不在当前消息中时才请用户重发。不得猜测、改写或声称已记住。' };
+              message: '保存内容与当前用户消息的原文不一致，未创建保存任务。请用户重新发送要保存的准确事实；不得猜测、重复错误候选或声称已记住。' };
             return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
           }
-          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, params.content),
-            params.content, options.scope ?? null, authorization.epoch);
+          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, aligned.content),
+            aligned.content, options.scope ?? null, authorization.epoch);
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,
             status: result.phase, errorCode: result.errorCode,
+            sourceCorrected: aligned.corrected,
             remembered: result.phase === 'ready',
-            message: result.phase === 'ready'
+            message: aligned.corrected && !['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
+              ? '已从当前用户原文校正模型的一个数字复制错误。只告知处理状态，不复述模型候选事实；queued/processing 尚未记住。'
+              : result.phase === 'ready'
               ? '长期记忆已完成处理，可以告知用户已记住。'
               : ['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
                 ? '长期记忆未保存成功。请根据状态和错误说明原因，不得声称已记住。'
