@@ -498,3 +498,50 @@ test('correcting a multi-fact explicit save restores an unrelated document remov
   assert.deepEqual(updated.governance.jobs[job.id].preservedUris, [finalPreference]);
   assert.equal(updated.governance.jobs[next.id].phase, 'complete');
 });
+
+test('reviewing the last merged fact deletes its document without relocating or resurrecting it', async t => {
+  const f = await setup(t);
+  f.docs.set(f.uri, f.old);
+  f.docs.set(f.extra, f.unrelated);
+  await f.store.transact(state => {
+    state.operations[f.other.id].phase = 'ready';
+    state.operations[f.other.id].memoryUris = [f.extra];
+    delete state.operations[f.other.id].payload;
+  });
+  const paraphrase = await f.delivery.save({ sessionId: 'chat', entryId: 'merged-paraphrase',
+    branchId: 'merged-paraphrase', contentVersion: 'v1' }, 'I enjoy jasmine tea');
+  await f.store.transact(state => { state.operations[paraphrase.id].phase = 'processing'; });
+  const drain = async operationId => {
+    if (operationId === paraphrase.id) {
+      f.docs.set(f.uri, `${f.docs.get(f.uri)}\nUser prefers jasmine tea`);
+      await f.store.transact(state => {
+        state.operations[operationId].phase = 'ready'; state.operations[operationId].memoryUris = [f.uri];
+      });
+    } else await f.drainWriter(operationId);
+  };
+  const selective = new MemorySelectiveService(f.store, f.transport, drain,
+    async ({ candidateText }) => candidateText.includes('jasmine') ? 'target' : 'unrelated');
+  const job = await selective.begin({ kind: 'forget', memoryUri: f.uri, selectedText: f.old });
+  assert.deepEqual(await selective.advance(job.id), {
+    status: 'pending', errorCode: 'MEMORY_GOVERNANCE_REVIEW_REQUIRED',
+  });
+  const state = await f.store.read();
+  assert.equal(state.governance.jobs[job.id].phase, 'applying');
+  assert.equal(state.operations[paraphrase.id].phase, 'ready');
+  assert.equal(state.operations[paraphrase.id].payload, 'I enjoy jasmine tea');
+  const management = new MemoryGovernanceService(f.store, f.transport, f.delivery);
+  assert.equal((await management.pending()).jobId, job.id);
+  const review = await management.review(job.id);
+  assert.equal(review.stage, 'merged');
+  assert.deepEqual(review.candidates.map(item => item.operationId), [paraphrase.id]);
+  assert(review.candidates[0].documentText.includes('User prefers jasmine tea'));
+  assert.equal((await management.resolveMergedWriter(job.id, paraphrase.id,
+    'User prefers jasmine tea')).status, 'complete');
+  assert.equal(await management.pending(), undefined);
+  assert.equal(f.docs.has(f.uri), false);
+  assert.equal(f.docs.get(f.extra), f.unrelated);
+  assert.equal((await selective.advance(job.id)).status, 'complete');
+  const completed = await f.store.read();
+  assert.equal(completed.operations[paraphrase.id].payload, undefined);
+  assert.equal(completed.governance.jobs[job.id].mergedResolutions, undefined);
+});
