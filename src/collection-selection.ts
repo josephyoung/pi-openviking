@@ -141,6 +141,19 @@ export class CollectionFactSelector {
             return { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' };
           }
           if (source.role !== 'assistant_reference' && item.confirmation != null) return { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' };
+          // A model may ignore exclusion context. Suppress an exact covered
+          // quote only for the receipt's original user entry; other facts and
+          // later source turns remain eligible. Receipt validity is rechecked
+          // before/after inference and again at durable handoff.
+          const submittedFacts = source.role === 'user' ? messages.filter(message => message.role === 'explicit_memory'
+            && message.explicitOperationId
+            && state.operations[message.explicitOperationId]?.source.branchId === source.source.entryId) : [];
+          if (submittedFacts.some(message => message.text.includes(item.quote))) continue;
+          // A quote mixing a submitted fact with other text is ambiguous: keep
+          // the batch retryable rather than repeat the fact or discard new ones.
+          if (submittedFacts.some(message => item.quote.includes(message.text))) {
+            return { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' };
+          }
           const evidence = [{ source: source.source, quote: item.quote }];
           let anchor = source;
           if (source.role === 'assistant_reference') {
