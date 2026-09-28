@@ -327,7 +327,10 @@ export class MemorySelectiveService {
         // documents to stable opaque names before releasing the barrier. Only
         // exclusive documents move; shared documents keep their other source.
         const relocated: Record<string, string> = {};
+        const remainingDocuments = new Set(await this.#documents());
         for (const uri of preserved.keys()) {
+          // Reviewed removal can consume the entire preserved document.
+          if (!remainingDocuments.has(uri)) continue;
           if (Object.values(state.operations).some(operation => !targetIds.includes(operation.id)
             && operation.phase === 'ready' && operation.memoryUris?.includes(uri))) continue;
           const digest = createHash('sha256').update(JSON.stringify([job.id, uri])).digest('hex');
@@ -368,7 +371,7 @@ export class MemorySelectiveService {
           }
           live.phase = 'complete'; live.completedAt = new Date().toISOString();
           const retained = [...preserved.keys()].filter(uri => uri !== plan.memoryUri)
-            .map(uri => relocated[uri] ?? uri);
+            .map(uri => relocated[uri] ?? uri).filter(uri => surviving.has(uri));
           if (retained.length) live.preservedUris = retained;
           const targetUri = relocated[plan.memoryUri] ?? plan.memoryUri;
           live.memoryUris = surviving.has(targetUri) ? [targetUri] : [];

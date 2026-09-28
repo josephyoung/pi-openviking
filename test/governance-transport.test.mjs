@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { OwnerMemoryClient } from '../dist/host.js';
 
-async function fixture(t, { scope = null, staleWrite = false, staleDelete = false, failedRead = false, taskStatus = 'completed', taskMismatch = false, noTask = false } = {}) {
+async function fixture(t, { scope = null, staleWrite = false, normalizeCreate = false, staleDelete = false, failedRead = false, taskStatus = 'completed', taskMismatch = false, noTask = false } = {}) {
   const calls = [];
-  let content = 'unrelated fact\nold fact', session = true;
+  let content = normalizeCreate ? undefined : 'unrelated fact\nold fact', session = true;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://local');
     let bytes = ''; for await (const chunk of request) bytes += chunk;
@@ -22,7 +22,7 @@ async function fixture(t, { scope = null, staleWrite = false, staleDelete = fals
     if (url.pathname === '/api/v1/tasks/task-1') return reply({ task_id: 'task-1', task_type: 'session_commit',
       resource_id: taskMismatch ? 'foreign-source' : 'source-1', status: taskStatus });
     if (url.pathname === '/api/v1/fs/stat') return content === undefined ? fail(404) : reply({});
-    if (url.pathname === '/api/v1/content/write') { if (!staleWrite) content = body.content; return reply({}); }
+    if (url.pathname === '/api/v1/content/write') { if (!staleWrite) content = normalizeCreate && content === undefined ? body.content.trim() : body.content; return reply({}); }
     if (url.pathname === '/api/v1/content/read') {
       if (failedRead) return fail(403);
       return content === undefined ? fail(404) : reply(content);
@@ -126,4 +126,14 @@ test('trusted project binds extraction policy and source peer instead of only an
   await global.client.createSession('source-1');
   await global.client.append({ ...operation, id: 'source-id', payload: 'global fact' });
   assert.equal(global.calls.find(call => call.path.endsWith('/messages')).body.peer_id, undefined);
+});
+
+test('restores exact bytes when creating a missing Markdown document normalizes whitespace', async t => {
+  const { client, calls, uri } = await fixture(t, { normalizeCreate: true });
+  const content = '  retained fact\n';
+  await client.replaceMemory(uri, content);
+  const writes = calls.filter(call => call.path === '/api/v1/content/write');
+  assert.equal(writes.length, 2);
+  assert(writes.every(call => call.body.uri === uri && call.body.content === content));
+  assert.equal(await client.readMemory(uri), content);
 });

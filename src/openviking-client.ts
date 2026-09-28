@@ -259,10 +259,15 @@ export class OwnerMemoryClient implements DeliveryTransport {
     const target = this.#documentUri(uri);
     if (typeof content !== 'string' || !content.trim()) throw new Error('INVALID_MEMORY_REPLACEMENT');
     await this.verifyIdentity();
-    await this.#sdk.write(target, content, { mode: 'replace', wait: true,
-      timeout: Math.ceil(this.#timeoutMs / 1000) });
-    // A successful HTTP reply alone is not proof that the replacement is visible.
-    if (await this.#sdk.read(target) !== content) throw new Error('MEMORY_REPLACEMENT_UNCONFIRMED');
+    // Creating a missing Markdown document can normalize its outer whitespace.
+    // One identical replacement on the now-existing document restores exact bytes.
+    // Network/read failures still propagate; only a confirmed mismatch retries.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.#sdk.write(target, content, { mode: 'replace', wait: true,
+        timeout: Math.ceil(this.#timeoutMs / 1000) });
+      if (await this.#sdk.read(target) === content) return;
+    }
+    throw new Error('MEMORY_REPLACEMENT_UNCONFIRMED');
   }
 
   /** Remove one document, never a caller-selected directory or derived metadata file. */
