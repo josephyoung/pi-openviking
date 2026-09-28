@@ -338,6 +338,79 @@ test('a completed explicit-only fact yields no second outbox operation after emp
   assert.equal(Object.keys((await f.store.read()).operations).length,1);
 });
 
+test('model selecting the same exact explicitly submitted fact cannot create a second automatic operation', async t => {
+  const f = await fixture(t);
+  const content = 'I prefer concise reports.';
+  const { id, operation } = await explicitTurn(f, { content, user: content });
+  const selected = await f.selector(async ({ data }) => {
+    const { messages } = JSON.parse(data);
+    assert.equal(messages.find(message => message.role === 'explicit_memory').text, content);
+    return json([{ sourceId: 'm0', quote: content }]);
+  }).select([id], f.session);
+  assert.equal(selected.status, 'ready');
+  assert.deepEqual(selected.facts, []);
+  assert.deepEqual(selected.explicitOperationIds, [operation.id]);
+  assert.equal((await f.delivery.collectSelection(selected)).status, 'recorded');
+  assert.equal(Object.keys((await f.store.read()).operations).length, 1);
+});
+
+test('a copied explicit substring is suppressed without losing a separate fact in the same source', async t => {
+  const f = await fixture(t);
+  const content = 'My reports are concise.';
+  const { id } = await explicitTurn(f, { content, user: `${content} I use metric units.` });
+  const selected = await f.selector(async () => json([
+    { sourceId: 'm0', quote: 'reports are concise' },
+    { sourceId: 'm0', quote: 'I use metric units.' },
+  ])).select([id], f.session);
+  assert.equal(selected.status, 'ready');
+  assert.deepEqual(selected.facts.map(fact => fact.text), ['I use metric units.']);
+  assert.equal((await f.delivery.collectSelection(selected)).status, 'recorded');
+  assert.equal(Object.keys((await f.store.read()).operations).length, 2);
+});
+
+test('a combined quote containing a submitted fact stays retryable instead of duplicating or losing other facts', async t => {
+  const f = await fixture(t);
+  const content = 'I prefer concise reports.';
+  const user = `${content} I use metric units.`;
+  const { id } = await explicitTurn(f, { content, user });
+  const blocked = await f.selector(async () => json([{ sourceId: 'm0', quote: user }])).select([id], f.session);
+  assert.deepEqual(blocked, { status: 'blocked', code: 'MEMORY_SELECTION_INVALID' });
+  assert.equal(Object.keys((await f.store.read()).operations).length, 1);
+  assert.equal((await f.store.read()).collectionRequests[id].phase, 'settled');
+  const retry = await f.selector(async () => json([{ sourceId: 'm0', quote: 'I use metric units.' }])).select([id], f.session);
+  assert.equal(retry.status, 'ready');
+  assert.deepEqual(retry.facts.map(fact => fact.text), ['I use metric units.']);
+  assert.equal((await f.delivery.collectSelection(retry)).status, 'recorded');
+  assert.equal(Object.keys((await f.store.read()).operations).length, 2);
+});
+
+test('matching text from a later user source is not suppressed by an earlier explicit receipt', async t => {
+  const f = await fixture(t);
+  const content = 'I prefer concise reports.';
+  const first = await explicitTurn(f, { content, user: content });
+  const secondId = await f.turn(content);
+  const selected = await f.selector(async ({ data }) => {
+    const source = JSON.parse(data).messages.filter(message => message.role === 'user').at(-1);
+    return json([{ sourceId: source.sourceId, quote: source.text }]);
+  }).select([first.id, secondId], f.session);
+  assert.equal(selected.status, 'ready');
+  assert.deepEqual(selected.facts.map(fact => fact.text), [content]);
+  assert.equal((await f.delivery.collectSelection(selected)).status, 'recorded');
+  assert.equal(Object.keys((await f.store.read()).operations).length, 2);
+});
+
+test('a failed exact explicit receipt does not suppress the automatic fallback', async t => {
+  const f = await fixture(t);
+  const content = 'I prefer concise reports.';
+  const { id } = await explicitTurn(f, { content, user: content, tamper: operation => { operation.phase = 'failed'; } });
+  const selected = await f.selector(async ({ data }) => {
+    assert(!JSON.parse(data).messages.some(message => message.role === 'explicit_memory'));
+    return json([{ sourceId: 'm0', quote: content }]);
+  }).select([id], f.session);
+  assert.equal(selected.status, 'ready');
+  assert.deepEqual(selected.facts.map(fact => fact.text), [content]);
+});
+
 for(const [name,tamper] of [
   ['different source',o=>o.source.entryId='unrelated'],
   ['different scope',o=>o.scope='other'],

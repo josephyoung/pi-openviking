@@ -450,8 +450,13 @@ unverifiable saves do not suppress automatic candidates. If an explicit save
 fails during selection or before handoff, the batch stays unprocessed for the
 normal bounded retry rather than silently losing candidates.
 
-This semantic overlap check uses the configured selector model; the host verifies
-provenance, not semantic equivalence. The opt-in real-model probe covers repeated
+The host also suppresses a selected user quote wholly contained in verified
+explicit content from that same user entry, even when the selector ignores the
+exclusion prompt. It retains other facts and matching text from later entries.
+If a quote mixes a submitted fact with additional text, selection stays pending
+for bounded retry instead of repeating that fact or dropping other candidates.
+Semantic equivalence beyond that exact overlap uses the configured selector
+model. The opt-in real-model probe covers repeated
 paraphrases, partial overlap and failed/forged receipts:
 
 ```sh
