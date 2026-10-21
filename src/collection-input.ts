@@ -130,7 +130,8 @@ export class CollectionInputBuilder {
             const source = user?.type === 'message' && typeof call.content === 'string'
               ? explicitSaveSource(request.sessionId, user, call.content) : undefined;
             // Match the protected explicit receipt to the actual call and user
-            // entry. A tool result claiming "saved" cannot suppress collection.
+            // turn anchor, not proof that the content was said in that entry.
+            // A tool result claiming "saved" cannot suppress collection.
             if (!operation || operation.kind !== 'explicit' || operation.scope !== scope
               || operation.authorizationEpoch !== request.authorizationEpoch
               || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)

@@ -17,6 +17,7 @@ export interface ExportedMemory {
     kind: 'explicit' | 'automatic';
     status: 'current' | 'preserved' | 'revoked';
     sessionId: string;
+    /** For explicit saves, a turn anchor plus content digest, not a verbatim evidence claim. */
     entryId: string;
     createdAt: string;
   }>;

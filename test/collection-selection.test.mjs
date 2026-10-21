@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
+import { createOpenVikingExtension, CollectionFactSelector, CollectionLifecycle, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-selection-'));
@@ -313,6 +313,44 @@ async function explicitTurn(f, { content = 'The user prefers concise reports.', 
   await lifecycle.settle(id, f.session);
   return { id, operation };
 }
+
+test('a host save of historical content is verified for exclusion, never relabeled as a user quote', async t => {
+  const f = await fixture(t);
+  const tools = new Map();
+  createOpenVikingExtension({ owner: f.store.owner, stateStore: f.store, client: { owner: f.store.owner, recall: async () => [] },
+    assertToolIsolation: async () => {}, wakeDelivery() {},
+    policy: { maxPayloadBytes: 8192, recallTimeoutMs: 50, recallTokenBudget: 1000, recallLimit: 5,
+      minimumScore: 0.5, countTokens: text => text.length },
+  })({ on() {}, registerTool: tool => tools.set(tool.name, tool) });
+  const lifecycle = new CollectionLifecycle(f.store);
+  const id = await lifecycle.begin(f.session);
+  f.session.appendMessage({ role: 'user', content: 'Continue. I use metric units.', timestamp: Date.now() });
+  const content = 'The user selected Chinese in the earlier submitted form.';
+  f.session.appendMessage({ role: 'assistant', stopReason: 'toolUse', timestamp: Date.now(),
+    content: [{ type: 'toolCall', id: 'save-call', name: 'memory_save', arguments: { content } }] });
+  const receipt = await tools.get('memory_save').execute('save-call', { content }, undefined, undefined, { sessionManager: f.session });
+  assert.equal(receipt.details.status, 'queued');
+  f.session.appendMessage({ role: 'toolResult', toolCallId: 'save-call', toolName: 'memory_save', isError: false,
+    timestamp: Date.now(), content: receipt.content, details: receipt.details });
+  f.session.appendMessage({ role: 'assistant', stopReason: 'stop', timestamp: Date.now(), content: [{ type: 'text', text: 'Submitted.' }] });
+  await lifecycle.settle(id, f.session);
+  const selected = await f.selector(async ({ data }) => {
+    const { messages } = JSON.parse(data);
+    assert.equal(messages.find(x => x.role === 'explicit_memory').text, content);
+    const user = messages.find(x => x.role === 'user');
+    assert.equal(user.text, 'Continue. I use metric units.');
+    return json([{ sourceId: user.sourceId, quote: 'I use metric units.' }]);
+  }).select([id], f.session);
+  assert.equal(selected.status, 'ready');
+  assert.deepEqual(selected.explicitOperationIds, [receipt.details.operationId]);
+  const invalid = await f.selector(async ({ data }) => {
+    const saved = JSON.parse(data).messages.find(x => x.role === 'explicit_memory');
+    return json([{ sourceId: saved.sourceId, quote: content }]);
+  }).select([id], f.session);
+  assert.equal(invalid.status, 'blocked');
+  assert.equal(invalid.code, 'MEMORY_SELECTION_INVALID');
+  assert.equal((await f.delivery.collectSelection(selected)).status, 'recorded');
+});
 
 test('verified explicit save is exclusion context; a different fact in the same message still submits', async t => {
   const f = await fixture(t); const {id, operation} = await explicitTurn(f);
