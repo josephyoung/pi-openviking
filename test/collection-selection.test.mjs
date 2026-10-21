@@ -325,7 +325,8 @@ test('a host save of historical content is verified for exclusion, never relabel
   const lifecycle = new CollectionLifecycle(f.store);
   const id = await lifecycle.begin(f.session);
   f.session.appendMessage({ role: 'user', content: 'Continue. I use metric units.', timestamp: Date.now() });
-  const content = 'The user selected Chinese in the earlier submitted form.';
+  const content = '  The user selected cafe\u0301 in the earlier submitted form.  ';
+  const canonical = content.trim().normalize('NFC');
   f.session.appendMessage({ role: 'assistant', stopReason: 'toolUse', timestamp: Date.now(),
     content: [{ type: 'toolCall', id: 'save-call', name: 'memory_save', arguments: { content } }] });
   const receipt = await tools.get('memory_save').execute('save-call', { content }, undefined, undefined, { sessionManager: f.session });
@@ -336,7 +337,7 @@ test('a host save of historical content is verified for exclusion, never relabel
   await lifecycle.settle(id, f.session);
   const selected = await f.selector(async ({ data }) => {
     const { messages } = JSON.parse(data);
-    assert.equal(messages.find(x => x.role === 'explicit_memory').text, content);
+    assert.equal(messages.find(x => x.role === 'explicit_memory').text, canonical);
     const user = messages.find(x => x.role === 'user');
     assert.equal(user.text, 'Continue. I use metric units.');
     return json([{ sourceId: user.sourceId, quote: 'I use metric units.' }]);
@@ -345,7 +346,7 @@ test('a host save of historical content is verified for exclusion, never relabel
   assert.deepEqual(selected.explicitOperationIds, [receipt.details.operationId]);
   const invalid = await f.selector(async ({ data }) => {
     const saved = JSON.parse(data).messages.find(x => x.role === 'explicit_memory');
-    return json([{ sourceId: saved.sourceId, quote: content }]);
+    return json([{ sourceId: saved.sourceId, quote: canonical }]);
   }).select([id], f.session);
   assert.equal(invalid.status, 'blocked');
   assert.equal(invalid.code, 'MEMORY_SELECTION_INVALID');

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -146,6 +147,33 @@ test('tool save does not certify or silently repair an unsupported number', asyn
   assert.equal(result.details.status, 'queued');
   assert.equal(result.details.remembered, false);
   assert.equal(Object.values((await f.stateStore.read()).operations)[0].payload, '验收专用灯塔代号是云汀2020');
+});
+
+test('legacy normalized save retries reuse their receipt and remain revoked', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const raw = '  I prefer cafe\u0301.  ';
+  const canonical = raw.trim().normalize('NFC');
+  const entry = { id: 'legacy-entry', type: 'message', timestamp: new Date(Date.now() + 1).toISOString(),
+    message: { role: 'user', content: canonical } };
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  // Reproduce the old version's identity independently of the new helper.
+  const legacy = await f.service.save({ sessionId: 'chat', entryId: `${entry.id}:${hash(canonical)}`,
+    branchId: entry.id, contentVersion: hash(JSON.stringify(entry)) }, canonical);
+  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [entry] } };
+  const save = () => f.tools.get('memory_save').execute('retry', { content: raw }, undefined, undefined, ctx);
+  assert.equal((await save()).details.operationId, legacy.id);
+  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
+  const uri = 'viking://user/alice/memories/preferences/fact.md';
+  await f.stateStore.transact(state => {
+    state.operations[legacy.id].phase = 'ready';
+    state.operations[legacy.id].memoryUris = [uri];
+  });
+  const job = await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'forget', scope: null, memoryUri: uri });
+  // Simulate coordinator completion; this verifies the replay fence, not remote cleanup.
+  await f.stateStore.transact(state => { state.governance.jobs[job.id].phase = 'complete'; });
+  assert.equal((await save()).details.errorCode, 'MEMORY_SOURCE_REVOKED');
+  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
 });
 
 test('model switches recount the same request and cannot reuse another tokenizer budget', async t => {

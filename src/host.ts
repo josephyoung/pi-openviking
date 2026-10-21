@@ -1,5 +1,5 @@
 import { governancePending } from './governance.js';
-import { explicitSaveSource } from './explicit-save-source.js';
+import { explicitSaveSource, normalizeSaveContent } from './explicit-save-source.js';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { CollectionSessionRegistry } from './collection-sessions.js';
@@ -170,8 +170,9 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           }
           // The user entry anchors authorization and receipt identity, not the
           // evidence for a summary, submitted form answer or confirmed result.
-          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, params.content),
-            params.content, options.scope ?? null, authorization.epoch);
+          const content = normalizeSaveContent(params.content);
+          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, content),
+            content, options.scope ?? null, authorization.epoch);
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,

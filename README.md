@@ -258,7 +258,9 @@ freshness, stable retries and collection receipt verification, not evidence that
 the user literally said the saved text. A turn predating enable/re-enable remains
 blocked; historical facts can be summarized from a fresh authorized turn.
 
-There is no numeric repair or latest-message substring gate. The model must
+There is no numeric repair or latest-message substring gate. Content retains the
+existing trim/NFC canonicalization for stable pre-upgrade retry and revocation
+identities; collection receipt verification uses the same canonical content. The model must
 verify numbers and names against the actual evidence and clarify ambiguities.
 Unsupported or incorrectly copied facts can therefore pass this tool; source
 accuracy is a model/prompt responsibility, independent of isolation and delivery

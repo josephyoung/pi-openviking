@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { explicitSaveSource } from './explicit-save-source.js';
+import { explicitSaveSource, normalizeSaveContent } from './explicit-save-source.js';
 import { lintSource } from '@secretlint/core';
 import { rules } from '@secretlint/secretlint-rule-preset-recommend';
 import type { TaskFactPolicy, TaskFactProjection } from './task-facts.js';
@@ -141,7 +141,7 @@ export class CollectionInputBuilder {
               || operation.source.contentVersion !== source.contentVersion) {
               excludedEntries.push(id); continue;
             }
-            text = call.content; role = 'explicit_memory'; explicitOperationId = operation.id;
+            text = normalizeSaveContent(call.content); role = 'explicit_memory'; explicitOperationId = operation.id;
           } else {
             const project = this.#taskFacts?.policyVersion === state.authorization.collectionConsent!.policyVersion
               ? this.#taskFacts.tools.get(message.toolName) : undefined;
