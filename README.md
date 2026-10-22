@@ -216,6 +216,32 @@ counting requests. Token counting shares the recall deadline, and errors or a
 missing model omit recalled data while ordinary chat continues. The per-request
 cache is bound to the model identity; model changes require counting again.
 
+Context recall uses `memoryRecallStateKey(state, scope)` (exported from `/host`)
+for its cache and post-retrieval fence, rather than the store-wide transaction
+revision. The pure function returns an opaque, request-local comparison token
+covering owner/scope, recall authorization (`enabled`, epoch, effective time and
+policy version), retirement, same-scope governance job identity/revision/phase,
+and same-scope commit/extraction state and memory receipts. Completed governance
+jobs remain in the token, catching an edit that starts and finishes during a
+slow recall. Collection lifecycle/consent bookkeeping, delivery attempt counters,
+backoff, timestamps, unchanged processing polls and other-scope changes do not
+invalidate recall. Remote commit/extraction transitions and completion still do.
+
+Host tools can use this same exported function on snapshots before and after
+retrieval/reranking/body loading. Token equality is not authorization: reject
+`state.retirement`, disabled authorization and `governancePending(state, scope)`
+(also exported from `/host`) at both boundaries, and retain trusted owner/scope,
+isolation, cancellation and active-model checks. Never derive scope from model
+input or persist these tokens across plugin versions. No state migration is
+required. Remote edits without a corresponding local governance/delivery change
+are not detectable by this token; it does not claim a remote atomic snapshot.
+
+`OwnerMemoryClient.recall()` deliberately maps search `abstract` to result
+`text`; it does not load document bodies. The existing scoped
+`readMemoryLimited(uri, maxBytes)` is available when a host needs bounded body
+loading after ranking. This change adds no body-fetch interface.
+
+
 `scheduler.stop(timeoutMs)` stops new claims and returns `true` only when the
 active tick has settled, including its local receipt writes. `false` means the
 deadline elapsed; it does not cancel an already sent mutation or certify that
