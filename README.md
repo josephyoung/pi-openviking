@@ -458,9 +458,10 @@ transient-status requests. After building, run:
 node scripts/check-collection-semantics.mjs "$PWD" /secure/models.json /secure/model-credentials.json
 ```
 
-It uses the configured `xiaomi-token-plan-cn` / `mimo-v2.5` model and synthetic
-business responses. The private credential JSON supplies the corresponding model
-key; it is never printed. This makes real model calls and fails on a semantic
+Both semantic probes use the configured `xiaomi-token-plan-cn` /
+`mimo-v2.6-flash` (MiMo V2.6 Flash) model and synthetic business responses. This
+is an acceptance-script model selection, not a forced runtime extraction model.
+The private credential JSON supplies the corresponding model key; it is never printed. This makes real model calls and fails on a semantic
 mismatch. It does not claim real OA, OpenViking delivery or browser coverage.
 
 Explicit and automatic saves may overlap in a completed turn. The selector gets
