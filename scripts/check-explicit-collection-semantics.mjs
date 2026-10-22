@@ -23,7 +23,7 @@ const promptHash=createHash('sha256').update(memory.collectionSelectionPrompt).d
 const root=await mkdtemp('/private/tmp/dano475-explicit-selection-');
 try {
  const runtime=await pi.ModelRuntime.create({authPath:join(root,'auth.json'),modelsPath,refreshOnCreate:false});
- const model=runtime.getModel('xiaomi-token-plan-cn','mimo-v2.5');assert(model);
+ const model=runtime.getModel('xiaomi-token-plan-cn','mimo-v2.6-flash');assert(model);
  const results=[];
  for(const [index,item] of cases.entries()){
   const owner={accountId:'explicit-probe',userId:`case${index}`};

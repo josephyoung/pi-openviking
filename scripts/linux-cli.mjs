@@ -22,7 +22,7 @@ await writeFile(profileFile, JSON.stringify(profile), { mode: 0o600 });
 const settings = `${root}/agent/settings.json`;
 await writeFile(settings, JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false }, theme: 'dark' }), { mode: 0o600 });
 await chown(settings, hostUid, groupId);
-const args = process.argv[2] ? ['--offline', '--provider', 'cestc', '--model', 'qwen35', '--thinking', 'off', '--no-session', '-p',
+const args = process.argv[2] ? ['--offline', '--provider', 'xiaomi-token-plan-cn', '--model', 'mimo-v2.6-flash', '--thinking', 'off', '--no-session', '-p',
   '这是隔离环境验收。请调用 bash 工具执行 printf CLI_WORKER_OK > cli-proof.txt，再调用 read 读取 cli-proof.txt，最后只回复读取的内容。'] : ['--offline', '--help'];
 if (process.argv[2]) {
   const modelsPath = `${root}/agent/models.json`;
