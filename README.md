@@ -233,11 +233,38 @@ on abrupt host termination.
 The 2026-09-18 Linux run used the real configured model through pi 0.82.1:
 Bash wrote `cli-proof.txt`, read returned its content, and the file belonged to
 the separate worker UID. Workspace extension discovery was denied and the CLI
-exited normally. `scripts/linux-cli.mjs` reproduces this in a disposable root
-container; its `cli-test-host.mjs` deliberately leaves memory disabled and does
-not substitute for memory-enabled acceptance. Model credentials are copied to
+exited normally. `scripts/linux-cli.mjs` now runs the same isolation checks with
+`xiaomi-token-plan-cn` / `mimo-v2.6-flash` in a disposable root container; its
+`cli-test-host.mjs` deliberately leaves memory disabled and does not substitute for memory-enabled acceptance. Model credentials are copied to
 a private agent directory. Extra CA certificates must remain readable after
 host privilege drop; TLS verification stays enabled.
+
+### Acceptance model configuration
+
+All fixed model selections in the acceptance scripts use
+`xiaomi-token-plan-cn` / `mimo-v2.6-flash` (MiMo V2.6 Flash):
+`linux-cli.mjs`, `check-collection-semantics.mjs`, and
+`check-explicit-collection-semantics.mjs`. The supplied private `models.json`
+must register that exact provider and model ID.
+
+`linux-cli-memory.mjs` takes provider/model arguments explicitly; use
+`xiaomi-token-plan-cn mimo-v2.6-flash` for current MiMo acceptance.
+`cli-memory-host.mjs` resolves collection selection from the external
+`memory-connection.json` fields `collection.model.provider` and
+`collection.model.id`; configure those to the same provider and model for this
+acceptance run. It reads externally provisioned `tokenizer/tokenizer.json` and
+`tokenizer/tokenizer_config.json` under the installation directory, without a
+built-in model-to-tokenizer registry. Supply matching Flash tokenizer assets
+and record their revision; reusing historical DeepSeek assets does not establish
+MiMo tokenizer compatibility. This single-tokenizer acceptance host does not
+validate model/tokenizer identity or support switching tokenizer bindings.
+
+The plugin runtime has no bundled provider/model registry, default extraction
+model, or tokenizer assets. Hosts supply the collection completion callback and
+active-model-aware `countTokens` implementation. Server-side OpenViking model
+configuration is external to this repository. Historical acceptance records,
+including their original model aliases and tokenizer hashes, remain unchanged
+and do not certify current MiMo acceptance.
 
 ## Release candidate validation
 
