@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { explicitSaveSource } from './explicit-save-source.js';
+import { explicitSaveSource, normalizeSaveContent } from './explicit-save-source.js';
 import { lintSource } from '@secretlint/core';
 import { rules } from '@secretlint/secretlint-rule-preset-recommend';
 import type { TaskFactPolicy, TaskFactProjection } from './task-facts.js';
@@ -130,7 +130,8 @@ export class CollectionInputBuilder {
             const source = user?.type === 'message' && typeof call.content === 'string'
               ? explicitSaveSource(request.sessionId, user, call.content) : undefined;
             // Match the protected explicit receipt to the actual call and user
-            // entry. A tool result claiming "saved" cannot suppress collection.
+            // turn anchor, not proof that the content was said in that entry.
+            // A tool result claiming "saved" cannot suppress collection.
             if (!operation || operation.kind !== 'explicit' || operation.scope !== scope
               || operation.authorizationEpoch !== request.authorizationEpoch
               || ['failed', 'blocked', 'blocked_by_pause'].includes(operation.phase)
@@ -140,7 +141,7 @@ export class CollectionInputBuilder {
               || operation.source.contentVersion !== source.contentVersion) {
               excludedEntries.push(id); continue;
             }
-            text = call.content; role = 'explicit_memory'; explicitOperationId = operation.id;
+            text = normalizeSaveContent(call.content); role = 'explicit_memory'; explicitOperationId = operation.id;
           } else {
             const project = this.#taskFacts?.policyVersion === state.authorization.collectionConsent!.policyVersion
               ? this.#taskFacts.tools.get(message.toolName) : undefined;

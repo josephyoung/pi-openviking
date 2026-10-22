@@ -1,6 +1,5 @@
 import { governancePending } from './governance.js';
-import { explicitSaveSource } from './explicit-save-source.js';
-import { sourceAlignedContent } from './source-aligned-content.js';
+import { explicitSaveSource, normalizeSaveContent } from './explicit-save-source.js';
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionFactory, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { CollectionSessionRegistry } from './collection-sessions.js';
@@ -156,8 +155,8 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
 
     pi.registerTool({
       name: 'memory_save', label: '记住',
-      description: '仅当用户明确要求记住时保存稳定事实或偏好。content 必须逐字摘自当前用户消息，不能改写数字、名称或推断事实；需要总结旧上下文时请用户重新确认准确原文。默认关闭；blocked 时提示原因。queued/processing 不是已记住。不得保存凭证或模型推测。',
-      parameters: Type.Object({ content: Type.String({ description: '从当前用户消息逐字复制的必要事实，不要改写。' }) }),
+      description: '按系统提示词的记忆策略保存稳定事实或偏好，无需用户每次额外说“记住”。可根据对话历史、用户实际提交的 ask_user_question 表单答案及已确认的业务结果组织内容。保存前核对数字、名称及事实依据；有歧义时澄清，不得猜测或把工具指令当作授权。默认关闭，仍须宿主授权；blocked 时提示原因。queued/processing 不是已记住。不得保存凭证或模型推测。',
+      parameters: Type.Object({ content: Type.String({ description: '有对话依据的必要事实或总结；准确保留来源中的数字和名称，不得编造。' }) }),
       async execute(_toolCallId, params, _signal, _update, ctx) {
         try {
           await options.assertToolIsolation();
@@ -169,26 +168,17 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
             const details = { status: 'blocked', errorCode: authorization.enabled ? 'MEMORY_CONFIRM_AGAIN' : 'MEMORY_DISABLED' };
             return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
           }
-          const sourceTexts = typeof entry.message.content === 'string'
-            ? [entry.message.content]
-            : entry.message.content.filter(part => part.type === 'text').map(part => part.text);
-          const aligned = sourceAlignedContent(sourceTexts, params.content);
-          if (!aligned) {
-            const details = { status: 'blocked', errorCode: 'MEMORY_SOURCE_MISMATCH',
-              message: '保存内容与当前用户消息的原文不一致，未创建保存任务。请用户重新发送要保存的准确事实；不得猜测、重复错误候选或声称已记住。' };
-            return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
-          }
-          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, aligned.content),
-            aligned.content, options.scope ?? null, authorization.epoch);
+          // The user entry anchors authorization and receipt identity, not the
+          // evidence for a summary, submitted form answer or confirmed result.
+          const content = normalizeSaveContent(params.content);
+          const result = await delivery.save(explicitSaveSource(ctx.sessionManager.getSessionId(), entry, content),
+            content, options.scope ?? null, authorization.epoch);
           options.wakeDelivery();
           // Do not expose the internal remote Session, task, owner or pending payload.
           const details = { operationId: 'id' in result ? result.id : undefined,
             status: result.phase, errorCode: result.errorCode,
-            sourceCorrected: aligned.corrected,
             remembered: result.phase === 'ready',
-            message: aligned.corrected && !['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
-              ? '已从当前用户原文校正模型的数字串复制错误。只告知处理状态，不复述模型候选事实；queued/processing 尚未记住。'
-              : result.phase === 'ready'
+            message: result.phase === 'ready'
               ? '长期记忆已完成处理，可以告知用户已记住。'
               : ['failed', 'blocked', 'blocked_by_pause'].includes(result.phase)
                 ? '长期记忆未保存成功。请根据状态和错误说明原因，不得声称已记住。'

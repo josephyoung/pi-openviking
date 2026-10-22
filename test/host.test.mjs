@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -100,35 +101,79 @@ test('a disabled save intent cannot automatically execute after enabling; a new 
   assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
 });
 
-test('explicit save rejects a model-mutated fact before creating an operation', async t => {
+for (const scenario of [
+  { name: 'current user fact', history: [], latest: '请记住：我偏好中文。', content: '我偏好中文。' },
+  { name: 'history summary', history: [{ role: 'user', content: '我用公制单位。' },
+    { role: 'user', content: '报告请简短。' }], latest: '继续下一步', content: '用户偏好公制单位和简短报告。' },
+  { name: 'submitted form answer', history: [{ role: 'toolResult', toolName: 'ask_user_question',
+    content: [{ type: 'text', text: '{"submitted":true,"answers":{"language":"中文"}}' }] }],
+    latest: '继续', content: '用户在表单中选择中文。' },
+  { name: 'confirmed business result without numeric rewriting',
+    history: [{ role: 'toolResult', toolName: 'update_project', content: [{ type: 'text', text: 'confirmed: 验收专用灯塔代号是云汀2020' }] }],
+    latest: '旧代号是验收专用灯塔代号是云汀201。', content: '验收专用灯塔代号是云汀2020' },
+]) {
+  test(`tool save accepts ${scenario.name} and preserves submitted content`, async t => {
+    const f = await setup(t);
+    await f.service.enable('v1');
+    const timestamp = new Date(Date.now() + 1).toISOString();
+    const branch = [{ id: 'entry', type: 'message', timestamp, message: { role: 'user', content: scenario.latest } },
+      ...scenario.history.map((message, index) => ({ id: `context-${index}`, type: 'message', timestamp, message }))];
+    if (scenario.name === 'history summary') branch.reverse();
+    const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => branch } };
+    const save = () => f.tools.get('memory_save').execute('call-id', { content: scenario.content }, undefined, undefined, ctx);
+    const result = await save();
+    assert.equal(result.details.status, 'queued');
+    assert.equal(result.details.remembered, false);
+    assert.equal('sourceCorrected' in result.details, false);
+    assert.equal((await save()).details.operationId, result.details.operationId);
+    const operations = Object.values((await f.stateStore.read()).operations);
+    assert.equal(operations.length, 1);
+    assert.equal(operations[0].payload, scenario.content);
+    assert.equal(operations[0].source.branchId, 'entry');
+    f.result.isolated = false;
+    assert.equal((await save()).details.status, 'blocked');
+    f.result.isolated = true;
+    await f.service.pause();
+    assert.equal((await save()).details.errorCode, 'MEMORY_DISABLED');
+  });
+}
+
+test('tool save does not certify or silently repair an unsupported number', async t => {
   const f = await setup(t);
   await f.service.enable('v1');
-  const timestamp = new Date(Date.now() + 1).toISOString();
-  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
-    message: { role: 'user', content: '请记住：验收专用灯塔代号是云汀201。' } }] } };
-  const save = content => f.tools.get('memory_save').execute('call-id', { content }, undefined, undefined, ctx);
-  const mutated = await save('验收专用灯塔代号是云汀9999');
-  assert.equal(mutated.details.status, 'blocked');
-  assert.equal(mutated.details.errorCode, 'MEMORY_SOURCE_MISMATCH');
-  assert.match(mutated.details.message, /当前用户消息/);
-  assert.deepEqual((await f.stateStore.read()).operations, {});
-  const exact = await save('验收专用灯塔代号是云汀201');
-  assert.equal(exact.details.status, 'queued');
-  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
+  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message',
+    timestamp: new Date(Date.now() + 1).toISOString(), message: { role: 'user', content: '验收专用灯塔代号是云汀201' } }] } };
+  const result = await f.tools.get('memory_save').execute('call', { content: '验收专用灯塔代号是云汀2020' }, undefined, undefined, ctx);
+  assert.equal(result.details.status, 'queued');
+  assert.equal(result.details.remembered, false);
+  assert.equal(Object.values((await f.stateStore.read()).operations)[0].payload, '验收专用灯塔代号是云汀2020');
 });
 
-test('explicit save uses the unique source-aligned number instead of the model copy', async t => {
+test('legacy normalized save retries reuse their receipt and remain revoked', async t => {
   const f = await setup(t);
   await f.service.enable('v1');
-  const timestamp = new Date(Date.now() + 1).toISOString();
-  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [{ id: 'entry', type: 'message', timestamp,
-    message: { role: 'user', content: '请记住：验收专用灯塔代号是云汀201。' } }] } };
-  const result = await f.tools.get('memory_save').execute('call-id', { content: '验收专用灯塔代号是云汀2020' }, undefined, undefined, ctx);
-  assert.equal(result.details.status, 'queued');
-  assert.equal(result.details.sourceCorrected, true);
-  const operations = Object.values((await f.stateStore.read()).operations);
-  assert.equal(operations.length, 1);
-  assert.equal(operations[0].payload, '验收专用灯塔代号是云汀201');
+  const raw = '  I prefer cafe\u0301.  ';
+  const canonical = raw.trim().normalize('NFC');
+  const entry = { id: 'legacy-entry', type: 'message', timestamp: new Date(Date.now() + 1).toISOString(),
+    message: { role: 'user', content: canonical } };
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  // Reproduce the old version's identity independently of the new helper.
+  const legacy = await f.service.save({ sessionId: 'chat', entryId: `${entry.id}:${hash(canonical)}`,
+    branchId: entry.id, contentVersion: hash(JSON.stringify(entry)) }, canonical);
+  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => [entry] } };
+  const save = () => f.tools.get('memory_save').execute('retry', { content: raw }, undefined, undefined, ctx);
+  assert.equal((await save()).details.operationId, legacy.id);
+  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
+  const uri = 'viking://user/alice/memories/preferences/fact.md';
+  await f.stateStore.transact(state => {
+    state.operations[legacy.id].phase = 'ready';
+    state.operations[legacy.id].memoryUris = [uri];
+  });
+  const job = await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'forget', scope: null, memoryUri: uri });
+  // Simulate coordinator completion; this verifies the replay fence, not remote cleanup.
+  await f.stateStore.transact(state => { state.governance.jobs[job.id].phase = 'complete'; });
+  assert.equal((await save()).details.errorCode, 'MEMORY_SOURCE_REVOKED');
+  assert.equal(Object.keys((await f.stateStore.read()).operations).length, 1);
 });
 
 test('model switches recount the same request and cannot reuse another tokenizer budget', async t => {

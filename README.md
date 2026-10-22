@@ -43,10 +43,10 @@ supervisor; hosts must still provide their own worker tool policy.
 - Bounded, quoted recall in a non-persisted custom context message, with a host
   tokenizer, per-request cache and pause/lifecycle invalidation.
 - Default-off consent, explicit durable enqueue and stable source deduplication.
-- Explicit saves accept only a verbatim span of the current user message.
-  A model-generated rewrite of a name or number is blocked before enqueue and
-  the tool result asks the assistant to request the exact fact again. Saving a
-  summary of older context likewise requires a fresh, explicit user message.
+- Tool saves follow the host system prompt's memory policy without requiring a
+  separate “remember this” request for every fact. Content may summarize history,
+  user-submitted form answers or confirmed business results. Numbers and names
+  must be checked against their evidence; the tool does not rewrite them.
 - A dedicated remote Session per save operation, with persisted causal phases.
   If session creation failed before the remote accepted it, the scheduler may
   retry only that empty Session with its original stable ID after a USER-scoped
@@ -248,11 +248,34 @@ on pi 0.82.1 and again with a fresh account on pi 0.85.1. See
 [the acceptance record](docs/acceptance-2026-09-18.md). Interactive TUI screenshots
 and Dano's real in-app Browser gate remain outstanding.
 
-For explicit `memory_save`, the host uses the current user message as the source
-of truth. It accepts an exact quote or repairs one uniquely aligned ASCII
-digit run with at most two edits copied incorrectly by the model; ambiguous
-matches and other rewrites are blocked before creating a save operation. A
-queued receipt still does not mean the memory is ready.
+For `memory_save`, `content` is model-organized memory, not necessarily a quote
+of the latest user message. The tool accepts conversation history, actual user
+submissions to `ask_user_question`, and confirmed business results as context;
+it does not mechanically verify those sources or the truth of the content.
+The system prompt decides when to save; enabled host authorization is still
+required. The latest user entry remains the initiating turn anchor for consent
+freshness, stable retries and collection receipt verification, not evidence that
+the user literally said the saved text. A turn predating enable/re-enable remains
+blocked; historical facts can be summarized from a fresh authorized turn.
+
+There is no numeric repair or latest-message substring gate. Content retains the
+existing trim/NFC canonicalization for stable pre-upgrade retry and revocation
+identities; collection receipt verification uses the same canonical content. The model must
+verify numbers and names against the actual evidence and clarify ambiguities.
+Unsupported or incorrectly copied facts can therefore pass this tool; source
+accuracy is a model/prompt responsibility, independent of isolation and delivery
+checks. The tool prompt still prohibits credentials; automatic collection retains
+its separate local credential screening. No new form tool or answer resubmission is required.
+A queued receipt still does not mean the memory is ready.
+
+`explicit` in stored operations means the `memory_save` delivery path, not proof
+of an explicit user command. Existing source IDs and state formats are unchanged:
+exported explicit entry IDs identify a turn anchor plus content digest, not full
+multi-message evidence lineage. Exact retries, revocation barriers, correction's
+preservation of unrelated documents and recovery keep their existing semantics.
+A new paraphrase in a later turn is not a replay of the original source ID;
+semantic prevention of re-learning forgotten facts is not guaranteed by this
+identity scheme. No migration or re-enqueue of existing operations is performed.
 
 The exact peer moved to pi 0.85.1 because pi 0.82.1's bundled shrinkwrap kept
 vulnerable transitive dependencies despite root overrides. The 0.85.1 install
@@ -442,7 +465,7 @@ mismatch. It does not claim real OA, OpenViking delivery or browser coverage.
 
 Explicit and automatic saves may overlap in a completed turn. The selector gets
 exclusion-only context from `memory_save` calls only when the protected owner
-state confirms the matching user source, content digest, scope and authorization
+state confirms the matching initiating user-turn anchor, content digest, scope and authorization
 epoch. It must omit equivalent facts (including paraphrases), while retaining
 other eligible facts in the same user message. Receipt context is locally
 secret-screened and cannot itself become a selected source. Failed, blocked or
