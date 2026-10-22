@@ -4,20 +4,20 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createOpenVikingExtension, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier } from '../dist/host.js';
+import { createOpenVikingExtension, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier, CollectionLifecycle, memoryRecallStateKey, governancePending } from '../dist/host.js';
 
-async function setup(t, policy = {}) {
+async function setup(t, policy = {}, scope = null) {
   const directory = await mkdtemp(join(tmpdir(), 'pi-memory-host-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const owner = { accountId: 'test', userId: 'alice' };
   const stateStore = new FileStateStore({ owner, directory, policyVersion: 'v1' });
   const result = { requests: 0, isolated: true };
-  const client = { owner, async recall() { result.requests++; return [{ uri: 'viking://user/alice/memories/fact.md', text: 'Use Chinese.', score: 0.9 }]; } };
+  const client = { owner, scope, async recall() { result.requests++; return [{ uri: `viking://user/alice/${scope === null ? '' : `peers/${scope}/`}memories/fact.md`, text: 'Use Chinese.', score: 0.9 }]; } };
   const handlers = new Map(), tools = new Map();
   const context = { model: { id: 'fixture-model', provider: 'fixture', api: 'openai-completions' } };
   const pi = { on: (name, handler) => handlers.set(name, name === 'context'
     ? event => handler(event, context) : handler), registerTool: tool => tools.set(tool.name, tool) };
-  const options = { owner, client, stateStore, assertToolIsolation: async () => { if (!result.isolated) throw new Error('no worker'); },
+  const options = { owner, scope, client, stateStore, assertToolIsolation: async () => { if (!result.isolated) throw new Error('no worker'); },
     policy: { maxPayloadBytes: 8192, recallTimeoutMs: 50, recallTokenBudget: 1000, recallLimit: 5, minimumScore: 0.5,
       countTokens: text => text.length, ...policy }, wakeDelivery() {} };
   const factory = createOpenVikingExtension(options);
@@ -288,4 +288,159 @@ test('governance begun during a remote recall invalidates the late result', asyn
     return [{ uri: 'viking://user/alice/memories/fact.md', text: 'revoked memory', score: 0.9 }];
   };
   assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+});
+
+
+test('collection lifecycle bookkeeping during recall does not discard legitimate memory', async t => {
+  const f = await setup(t, { recallTimeoutMs: 2000 });
+  await f.service.enable('v1');
+  await f.service.authorizeCollection({ policyVersion: 'v1', scope: null, boundaries: [] });
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  const recall = f.client.recall;
+  f.client.recall = async () => {
+    const before = await f.stateStore.read();
+    const id = await new CollectionLifecycle(f.stateStore).begin({ getSessionId: () => 'concurrent-chat', getBranch: () => [] });
+    assert(id);
+    assert((await f.stateStore.read()).revision > before.revision);
+    return recall();
+  };
+  const result = await f.handlers.get('context')({ messages });
+  assert.equal(result.messages.length, 2);
+  assert.match(result.messages[1].content, /Use Chinese/);
+});
+
+
+async function processingOperation(f, scope = f.options.scope) {
+  const operation = await f.service.save({ sessionId: 'delivery', entryId: `entry-${scope}`,
+    branchId: 'branch', contentVersion: 'v1' }, 'new fact', scope);
+  await f.stateStore.transact(state => {
+    state.operations[operation.id].phase = 'processing';
+    state.operations[operation.id].taskId = 'synthetic-task';
+  });
+  return operation.id;
+}
+
+test('processing polls and collection changes preserve in-flight recall and its cache', async t => {
+  const f = await setup(t, { recallTimeoutMs: 2000 }, 'project_a');
+  await f.service.enable('v1');
+  await f.service.authorizeCollection({ policyVersion: 'v1', scope: 'project_a', boundaries: [] });
+  const id = await processingOperation(f);
+  f.client.inspect = async () => ({ status: 'processing' });
+  const bookkeeping = async () => {
+    await f.service.advance(id); // Real read-only poll, including its updatedAt transaction.
+    await f.stateStore.transact(state => {
+      state.operations[id].deliveryAttempts = (state.operations[id].deliveryAttempts ?? 0) + 1;
+      state.operations[id].nextAttemptAt = Date.now() + 1000;
+    });
+    await new CollectionLifecycle(f.stateStore, 'project_a').begin({ getSessionId: () => 'chat', getBranch: () => [] });
+  };
+  const recall = f.client.recall;
+  f.client.recall = async () => { await bookkeeping(); return recall(); };
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  await bookkeeping();
+  await f.service.revokeCollection(); // Separate collection consent is not recall consent.
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal(f.result.requests, 1);
+});
+
+test('other project content and governance changes do not discard scoped recall or its cache', async t => {
+  const f = await setup(t, { recallTimeoutMs: 2000 }, 'project_a');
+  await f.service.enable('v1');
+  const id = await processingOperation(f, 'project_b');
+  const recall = f.client.recall;
+  f.client.recall = async () => {
+    await f.stateStore.transact(state => { state.operations[id].phase = 'ready'; });
+    await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: 'project_b' });
+    return recall();
+  };
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal(f.result.requests, 1);
+});
+
+for (const mutation of ['pause-resume', 'retirement', 'governance-completed', 'memory-ready', 'commit-started', 'session-reset']) {
+  test(`${mutation} during recall still invalidates the result`, async t => {
+    const f = await setup(t, { recallTimeoutMs: 2000 }, 'project_a');
+    await f.service.enable('v1');
+    const id = await processingOperation(f);
+    if (mutation === 'commit-started') await f.stateStore.transact(state => {
+      state.operations[id].phase = 'message_delivered'; delete state.operations[id].taskId;
+    });
+    const recall = f.client.recall;
+    f.client.recall = async () => {
+      if (mutation === 'pause-resume') { await f.service.pause(); await f.service.enable('v1'); }
+      if (mutation === 'retirement') {
+        await f.service.pause();
+        await f.stateStore.transact(state => {
+          state.retirement = { id: '11111111-1111-4111-8111-111111111111', phase: 'requested', requestedAt: new Date().toISOString() };
+        });
+      }
+      if (mutation === 'governance-completed') {
+        const job = await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: 'project_a' });
+        // Simulate completion before the recall returns: no pending barrier remains.
+        await f.stateStore.transact(state => { state.governance.jobs[job.id].phase = 'complete'; });
+      }
+      if (mutation === 'memory-ready') {
+        f.client.inspect = async () => ({ status: 'ready', archiveId: 'archive', memoryUris: ['viking://user/alice/peers/project_a/memories/fact.md'] });
+        await f.service.advance(id);
+      }
+      if (mutation === 'commit-started') {
+        f.client.commit = async () => ({ taskId: 'new-task' });
+        await f.service.advance(id);
+      }
+      if (mutation === 'session-reset') f.handlers.get('before_agent_start')({ prompt: 'query' });
+      return recall();
+    };
+    f.handlers.get('before_agent_start')({ prompt: 'query' });
+    assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+  });
+}
+
+test('completed memory and completed governance invalidate cached recall', async t => {
+  const f = await setup(t, { recallTimeoutMs: 2000 }, 'project_a');
+  await f.service.enable('v1');
+  const id = await processingOperation(f);
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  f.client.inspect = async () => ({ status: 'ready', archiveId: 'archive', memoryUris: ['viking://user/alice/peers/project_a/memories/fact.md'] });
+  await f.service.advance(id);
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal(f.result.requests, 2);
+  const job = await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: 'project_a' });
+  await f.stateStore.transact(state => { state.governance.jobs[job.id].phase = 'complete'; });
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal(f.result.requests, 3);
+});
+
+test('relevant changes during token counting invalidate recall after retrieval', async t => {
+  let f;
+  f = await setup(t, { recallTimeoutMs: 2000, countTokens: async () => {
+    await f.service.pause(); await f.service.enable('v1'); return 1;
+  } });
+  await f.service.enable('v1');
+  f.handlers.get('before_agent_start')({ prompt: 'query' });
+  assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+});
+
+
+test('public recall key is pure, scoped and not an authorization decision', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  const snapshot = await f.stateStore.read();
+  const original = structuredClone(snapshot);
+  const key = memoryRecallStateKey(snapshot, null);
+  assert.equal(typeof key, 'string');
+  assert.equal(memoryRecallStateKey(snapshot, null), key);
+  assert.notEqual(memoryRecallStateKey(snapshot, 'project_a'), key);
+  assert.deepEqual(snapshot, original);
+  await f.stateStore.transact(() => {});
+  assert.equal(memoryRecallStateKey(await f.stateStore.read(), null), key);
+  await new MemoryGovernanceBarrier(f.stateStore).begin({ kind: 'clear', scope: null });
+  const pending = await f.stateStore.read();
+  assert.equal(governancePending(pending, null), true);
+  assert.notEqual(memoryRecallStateKey(pending, null), key);
+  // Unchanged tokens while a barrier is pending never grant permission.
+  assert.equal(memoryRecallStateKey(pending, null), memoryRecallStateKey(pending, null));
 });

@@ -1,3 +1,4 @@
+import { memoryRecallStateKey } from './recall-state.js';
 import { governancePending } from './governance.js';
 import { explicitSaveSource, normalizeSaveContent } from './explicit-save-source.js';
 import { Type } from 'typebox';
@@ -9,6 +10,8 @@ import type { MemoryGovernanceService, GovernanceReceipt } from './memory-govern
 import type { RecalledMemory } from './openviking-client.js';
 import { sameOwner, type Owner, type StateStore } from './types.js';
 
+export { memoryRecallStateKey } from './recall-state.js';
+export { governancePending } from './governance.js';
 export { protectedMemoryResources } from './resource-profile.js';
 export { FileStateStore } from './state-store.js';
 export { DeliveryScheduler } from './scheduler.js';
@@ -33,7 +36,7 @@ export type { MemoryGovernanceClient, GovernanceReceipt } from './memory-governa
 export type { GovernanceTransport, GovernanceStateStore, GovernanceProgress } from './governance-coordinator.js';
 export type { CollectionHandoffResult } from './delivery.js';
 export { OwnerMemoryClient } from './openviking-client.js';
-export type { Owner, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';
+export type { Owner, OwnerState, Source, Operation, StateStore, CollectionBoundary, CollectionConsent, CollectionSource, CollectionRequest } from './types.js';
 
 export type MemoryModel = Pick<NonNullable<ExtensionContext['model']>, 'id' | 'provider' | 'api'>;
 
@@ -111,7 +114,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
     let collectionRequest: string | undefined;
     let waitingPrompts = 0;
     let query = '';
-    let cached: { revision: number; modelKey: string; text: string } | undefined;
+    let cached: { stateKey: string; modelKey: string; text: string } | undefined;
     let lifetime = new AbortController();
 
     const reset = () => {
@@ -279,8 +282,9 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
         const work = async () => {
           await options.assertToolIsolation();
           const state = await options.stateStore.read();
-          if (state.retirement || !state.authorization.enabled || governancePending(state, options.scope ?? null)) { cached = undefined; return ''; }
-          if (cached?.revision === state.revision && cached.modelKey === modelKey) {
+          if (state.retirement || !state.authorization.enabled || governancePending(state, scope)) { cached = undefined; return ''; }
+          const stateKey = memoryRecallStateKey(state, scope);
+          if (cached?.stateKey === stateKey && cached.modelKey === modelKey) {
             return keyFor(ctx.model) === modelKey ? cached.text : '';
           }
           const found = await options.client.recall(currentQuery, policy.recallLimit, signal);
@@ -296,13 +300,14 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
             if (count > policy.recallTokenBudget) selected.pop();
           }
           signal.throwIfAborted();
-          // Pause or governance changes during retrieval invalidate the result.
+          // Recheck recall-relevant state; unrelated bookkeeping must not discard a slow result.
           const latest = await options.stateStore.read();
-          if (latest.retirement || !latest.authorization.enabled || latest.revision !== state.revision || query !== currentQuery
+          if (latest.retirement || !latest.authorization.enabled || governancePending(latest, scope)
+            || memoryRecallStateKey(latest, scope) !== stateKey || query !== currentQuery
             || keyFor(ctx.model) !== modelKey) return '';
           signal.throwIfAborted();
           const text = selected.length ? render() : '';
-          cached = { revision: state.revision, modelKey, text };
+          cached = { stateKey, modelKey, text };
           return text;
         };
         const timeout = new Promise<string>(resolve => { timer = setTimeout(() => resolve(''), policy.recallTimeoutMs); });
