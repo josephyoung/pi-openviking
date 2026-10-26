@@ -5,7 +5,7 @@ An independent OpenViking memory extension for pi, tracked by
 
 **Implementation and Dano release acceptance remain in progress.**
 The package name is `@josephyoung/pi-openviking`. Both entry modules compile
-against pi 0.85.1. The real pi loader loads both entries and keeps a single
+against pi 1.4.0. The real pi loader loads both entries and keeps a single
 registration after reload; the standard entry fails closed without its launcher binding.
 The Linux CLI now runs through the public pi entry; memory-enabled CLI acceptance and product integration continue under [#474](https://github.com/zhengchengqiaobusiness-arch/Dano/issues/474).
 
@@ -134,7 +134,7 @@ does not activate these capabilities in Dano.
 
 - OpenViking server: unmodified 0.4.20.
 - OpenViking TypeScript SDK: 0.1.0, exact dependency.
-- pi: 0.85.1, exact peer dependency (not bundled).
+- pi: development and loader verification use exact 1.4.0; the peer dependency is exact `1.4.0` (not bundled), matching the isolated worker launcher's fixed-version gate.
 - Local actual-adapter save: 2026-09-18, synthetic fact reached `ready` and was
   recalled after ~22.8 seconds. Every delivery step recreated the adapter from
   persisted state. This is one functional run, not the PRD performance sample.

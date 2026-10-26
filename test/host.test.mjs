@@ -66,6 +66,21 @@ test('recall stays a non-persisted quoted custom message, is cached per request 
   assert.equal((await narrow.handlers.get('context')({ messages })).messages.length, 1);
 });
 
+test('custom-message starts clear recall without treating extension text as a user query', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  await f.handlers.get('before_agent_start')({ messageType: 'user', prompt: 'query' });
+  const first = await f.handlers.get('context')({ messages });
+  assert.equal(f.result.requests, 1);
+  await f.handlers.get('before_agent_start')({ messageType: 'custom',
+    message: { customType: 'continuation', content: 'extension text', display: false } });
+  assert.deepEqual((await f.handlers.get('context')({ messages: first.messages })).messages, messages);
+  assert.equal(f.result.requests, 1);
+  await f.handlers.get('before_agent_start')({ messageType: 'user', prompt: 'next query' });
+  assert.equal((await f.handlers.get('context')({ messages })).messages.length, 2);
+  assert.equal(f.result.requests, 2);
+});
+
 test('retrieval has a hard wait limit and a failed worker prevents memory access', async t => {
   const f = await setup(t);
   await f.service.enable('v1');
@@ -77,6 +92,31 @@ test('retrieval has a hard wait limit and a failed worker prevents memory access
   f.result.isolated = false;
   f.handlers.get('before_agent_start')({ prompt: 'query' });
   assert.equal((await f.handlers.get('context')({ messages })).messages.length, 1);
+});
+
+test('custom-message continuations keep the original collection request without starting another', async t => {
+  const f = await setup(t);
+  await f.service.enable('v1');
+  await f.service.authorizeCollection({ policyVersion: 'v1', scope: null, boundaries: [] });
+  let registrations = 0;
+  f.options.collection = { lifecycleTimeoutMs: 1000,
+    sessions: { async register() { registrations++; } }, wake() {} };
+  const branch = [];
+  const ctx = { sessionManager: { getSessionId: () => 'chat', getBranch: () => branch } };
+  await f.handlers.get('before_agent_start')({ messageType: 'user', prompt: 'user request' }, ctx);
+  const requests = (await f.stateStore.read()).collectionRequests;
+  const id = Object.keys(requests)[0];
+  assert(id);
+  branch.push({ id: 'user', type: 'message', timestamp: new Date().toISOString(),
+    message: { role: 'user', content: 'user request' } });
+  await f.handlers.get('before_agent_start')({ messageType: 'custom',
+    message: { customType: 'continuation', content: 'continue', display: false } }, ctx);
+  assert.equal(registrations, 1);
+  assert.deepEqual((await f.stateStore.read()).collectionRequests, requests);
+  branch.push({ id: 'assistant', type: 'message', timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' } });
+  await f.handlers.get('agent_settled')({}, ctx);
+  assert.equal((await f.stateStore.read()).collectionRequests[id].phase, 'settled');
 });
 
 test('pause during retrieval invalidates the response and later cached context', async t => {
