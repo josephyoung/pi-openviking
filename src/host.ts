@@ -133,7 +133,10 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
     pi.on('ui_prompt_end', () => { waitingPrompts = Math.max(0, waitingPrompts - 1); });
     const collectionError = () => { try { options.collection?.onError?.('MEMORY_COLLECTION_LIFECYCLE_UNAVAILABLE'); } catch { /* observer isolation */ } };
     pi.on('before_agent_start', async (event, ctx) => {
-      reset(); query = event.prompt;
+      reset();
+      // Custom-message continuations are not new user requests or recall queries.
+      if (event.messageType === 'custom') return;
+      query = event.prompt;
       if (!options.collection) return;
       try {
         const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(options.collection!.lifecycleTimeoutMs)]);
