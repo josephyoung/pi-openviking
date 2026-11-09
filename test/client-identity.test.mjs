@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { OwnerMemoryClient } from '../dist/host.js';
 
-test('cancelling one recall closes its HTTP request without aborting concurrent recalls', async t => {
+for (const mode of ['recall', 'document']) test(`cancelling ${mode} closes its HTTP request without aborting concurrent recalls`, async t => {
   let started, closed;
   const startedPromise = new Promise(resolve => { started = resolve; });
   const closedPromise = new Promise(resolve => { closed = resolve; });
@@ -15,7 +15,7 @@ test('cancelling one recall closes its HTTP request without aborting concurrent 
     }
     let body = '';
     for await (const chunk of request) body += chunk;
-    if (JSON.parse(body).query === 'slow') {
+    if (request.url.startsWith('/api/v1/content/read?') || JSON.parse(body).query === 'slow') {
       response.on('close', closed);
       started();
       return;
@@ -29,7 +29,8 @@ test('cancelling one recall closes its HTTP request without aborting concurrent 
   const client = new OwnerMemoryClient({ owner: { accountId: 'test', userId: 'alice' },
     apiKey: 'synthetic', baseUrl: `http://127.0.0.1:${server.address().port}`, timeoutMs: 5000 });
   const controller = new AbortController();
-  const slow = client.recall('slow', 5, controller.signal);
+  const slow = mode === 'recall' ? client.recall('slow', 5, controller.signal)
+    : client.readMemoryLimited('viking://user/alice/memories/fact.md', 1024, controller.signal);
   const rejected = assert.rejects(slow);
   await startedPromise;
   const fast = client.recall('fast', 5);

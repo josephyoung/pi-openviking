@@ -315,15 +315,17 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   /** Bound the HTTP response before decoding JSON; stat is only a preflight hint. */
-  async readMemoryLimited(uri: string, maxBytes: number): Promise<string> {
+  async readMemoryLimited(uri: string, maxBytes: number, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const target = this.#documentUri(uri);
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 2097152) {
       throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
     }
     await this.verifyIdentity();
+    signal?.throwIfAborted();
     const query = new URLSearchParams({ uri: target, offset: '0', limit: '-1' });
     const response = await fetch(`${this.#baseUrl}/api/v1/content/read?${query}`, {
-      redirect: 'error', signal: AbortSignal.timeout(this.#timeoutMs),
+      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(this.#timeoutMs), ...(signal ? [signal] : [])]),
       headers: { 'X-API-Key': this.#key,
         ...(this.scope ? { 'X-OpenViking-Actor-Peer': this.scope } : {}) },
     });
