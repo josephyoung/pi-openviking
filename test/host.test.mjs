@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, open } from 'node:fs/promises';
+import { flock } from 'fs-ext';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createOpenVikingExtension, FileStateStore, MemoryDelivery, MemoryGovernanceBarrier, CollectionLifecycle, memoryRecallStateKey, governancePending } from '../dist/host.js';
@@ -23,9 +24,33 @@ async function setup(t, policy = {}, scope = null) {
   const factory = createOpenVikingExtension(options);
   factory(pi);
   const service = new MemoryDelivery({ store: stateStore, transport: client, maxPayloadBytes: 8192 });
-  return { options, factory, pi, handlers, tools, stateStore, service, result, client, context };
+  return { directory, options, factory, pi, handlers, tools, stateStore, service, result, client, context };
 }
 const messages = [{ role: 'user', content: 'Design a feature.', timestamp: Date.now() }];
+
+test('automatic recall deadline releases a contended state read without a late search', async t => {
+  const f = await setup(t, { recallTimeoutMs: 30 });
+  await f.service.enable('v1');
+  const originalRead = f.stateStore.read.bind(f.stateStore);
+  let waiting = 0;
+  f.stateStore.read = async signal => {
+    waiting++;
+    try { return await originalRead(signal); }
+    finally { waiting--; }
+  };
+  // The store's actual owner directory is the fixture path, not a mock read.
+  const lock = await open(join(f.directory, 'state.lock'), 'r+');
+  const applyLock = operation => new Promise((resolve, reject) => flock(lock.fd, operation, e => e ? reject(e) : resolve()));
+  await applyLock('exnb');
+  try {
+    await f.handlers.get('before_agent_start')({ prompt: 'query' });
+    assert.deepEqual((await f.handlers.get('context')({ messages })).messages, messages);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(waiting, 0);
+  } finally { await applyLock('un'); await lock.close(); }
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.result.requests, 0);
+});
 
 test('factory rejects owner mismatch and duplicate registration; no fallback credentials', async t => {
   const f = await setup(t);

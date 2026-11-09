@@ -2,7 +2,8 @@ import { lstat, realpath, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, basename, isAbsolute, relative, resolve } from 'node:path';
 import { SessionManager, parseSessionEntries, CURRENT_SESSION_VERSION, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { CollectionBoundary, StateStore } from './types.js';
+import { beginCollectionRequest } from './collection-lifecycle.js';
+import type { OwnerState, CollectionBoundary, StateStore } from './types.js';
 
 type Session = Pick<ExtensionContext['sessionManager'], 'getSessionId' | 'getSessionFile' | 'getBranch'>;
 
@@ -38,20 +39,31 @@ export class CollectionSessionRegistry {
 
   /** Called by the trusted extension context before a new request. New pi files
    * may not be flushed yet; the reference is durable before collection begins. */
-  async register(session: Session, signal?: AbortSignal): Promise<void> {
+  async #register<T>(session: Session, signal: AbortSignal | undefined, mutation: (state: OwnerState) => T): Promise<T> {
     const file = session.getSessionFile();
     if (!file) throw new Error('PERSISTENT_COLLECTION_SESSION_REQUIRED');
     const path = await this.#path(file, true, signal);
     const id = session.getSessionId();
     if (!id) throw new Error('INVALID_COLLECTION_SESSION_ID');
-    await this.options.store.transact(state => {
+    const result = await this.options.store.transact(state => {
       signal?.throwIfAborted();
       state.collectionSessionFiles ??= {};
       const existing = state.collectionSessionFiles[id];
       if (existing && existing !== path) throw new Error('COLLECTION_SESSION_REBOUND');
       state.collectionSessionFiles[id] = path;
+      return mutation(state);
     }, signal);
     this.#live.set(id, new WeakRef(session));
+    return result;
+  }
+
+  register(session: Session, signal?: AbortSignal): Promise<void> {
+    return this.#register(session, signal, () => {});
+  }
+
+  /** Persist the source binding and pre-input boundary in one transaction. */
+  begin(session: Session, scope: string | null, continuationId?: string, signal?: AbortSignal): Promise<string | undefined> {
+    return this.#register(session, signal, state => beginCollectionRequest(state, session, scope, continuationId, signal));
   }
 
   async resolveSession(id: string, signal?: AbortSignal): Promise<SessionManager> {

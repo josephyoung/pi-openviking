@@ -45,9 +45,14 @@ export class OwnerMemoryClient implements DeliveryTransport {
     this.#key = options.apiKey;
     this.#timeoutMs = options.timeoutMs;
     this.#root = memoryRoot(this.owner, this.scope);
-    this.#sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
+    this.#sdk = this.#client();
+  }
+
+  #client(signal?: AbortSignal): OpenVikingClient {
+    return new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
       actorPeerId: this.scope ?? undefined, timeout: this.#timeoutMs,
-      fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
+      fetch: (input, init) => fetch(input, { ...init, redirect: 'error',
+        ...(signal ? { signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) } : {}) }) });
   }
 
   async verifyIdentity(): Promise<void> {
@@ -310,15 +315,17 @@ export class OwnerMemoryClient implements DeliveryTransport {
   }
 
   /** Bound the HTTP response before decoding JSON; stat is only a preflight hint. */
-  async readMemoryLimited(uri: string, maxBytes: number): Promise<string> {
+  async readMemoryLimited(uri: string, maxBytes: number, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const target = this.#documentUri(uri);
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 2097152) {
       throw new Error('INVALID_MEMORY_EXPORT_LIMIT');
     }
     await this.verifyIdentity();
+    signal?.throwIfAborted();
     const query = new URLSearchParams({ uri: target, offset: '0', limit: '-1' });
     const response = await fetch(`${this.#baseUrl}/api/v1/content/read?${query}`, {
-      redirect: 'error', signal: AbortSignal.timeout(this.#timeoutMs),
+      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(this.#timeoutMs), ...(signal ? [signal] : [])]),
       headers: { 'X-API-Key': this.#key,
         ...(this.scope ? { 'X-OpenViking-Actor-Peer': this.scope } : {}) },
     });
@@ -391,7 +398,9 @@ export class OwnerMemoryClient implements DeliveryTransport {
     signal?.throwIfAborted();
     await this.verifyIdentity();
     signal?.throwIfAborted();
-    const result = await this.#sdk.find(query, { targetUri: this.#root, limit, level: [2] });
+    // SDK 0.1.0 search options do not accept a signal. Bind cancellation to
+    // this call's fetch only; never mutate the shared client used by other calls.
+    const result = await this.#client(signal).find(query, { targetUri: this.#root, limit, level: [2] });
     signal?.throwIfAborted();
     return (result.memories ?? []).flatMap(value => {
       const memory = object(value);
