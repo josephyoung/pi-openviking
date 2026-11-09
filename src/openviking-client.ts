@@ -45,9 +45,14 @@ export class OwnerMemoryClient implements DeliveryTransport {
     this.#key = options.apiKey;
     this.#timeoutMs = options.timeoutMs;
     this.#root = memoryRoot(this.owner, this.scope);
-    this.#sdk = new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
+    this.#sdk = this.#client();
+  }
+
+  #client(signal?: AbortSignal): OpenVikingClient {
+    return new OpenVikingClient({ baseUrl: this.#baseUrl, apiKey: this.#key,
       actorPeerId: this.scope ?? undefined, timeout: this.#timeoutMs,
-      fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }) });
+      fetch: (input, init) => fetch(input, { ...init, redirect: 'error',
+        ...(signal ? { signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) } : {}) }) });
   }
 
   async verifyIdentity(): Promise<void> {
@@ -391,7 +396,9 @@ export class OwnerMemoryClient implements DeliveryTransport {
     signal?.throwIfAborted();
     await this.verifyIdentity();
     signal?.throwIfAborted();
-    const result = await this.#sdk.find(query, { targetUri: this.#root, limit, level: [2] });
+    // SDK 0.1.0 search options do not accept a signal. Bind cancellation to
+    // this call's fetch only; never mutate the shared client used by other calls.
+    const result = await this.#client(signal).find(query, { targetUri: this.#root, limit, level: [2] });
     signal?.throwIfAborted();
     return (result.memories ?? []).flatMap(value => {
       const memory = object(value);

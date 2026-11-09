@@ -3,6 +3,45 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { OwnerMemoryClient } from '../dist/host.js';
 
+test('cancelling one recall closes its HTTP request without aborting concurrent recalls', async t => {
+  let started, closed;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  const closedPromise = new Promise(resolve => { closed = resolve; });
+  const server = createServer(async (request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    if (request.url === '/health') {
+      response.end(JSON.stringify({ auth_mode: 'api_key', role: 'user', account_id: 'test', user_id: 'alice' }));
+      return;
+    }
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    if (JSON.parse(body).query === 'slow') {
+      response.on('close', closed);
+      started();
+      return;
+    }
+    response.end(JSON.stringify({ status: 'ok', result: { memories: [
+      { uri: 'viking://user/alice/memories/fact.md', abstract: 'Synthetic fact.', score: 0.9 },
+    ] } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const client = new OwnerMemoryClient({ owner: { accountId: 'test', userId: 'alice' },
+    apiKey: 'synthetic', baseUrl: `http://127.0.0.1:${server.address().port}`, timeoutMs: 5000 });
+  const controller = new AbortController();
+  const slow = client.recall('slow', 5, controller.signal);
+  const rejected = assert.rejects(slow);
+  await startedPromise;
+  const fast = client.recall('fast', 5);
+  controller.abort();
+  await rejected;
+  await Promise.race([closedPromise, new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('cancelled HTTP request remained open')), 1000);
+    timer.unref();
+  })]);
+  assert.equal((await fast)[0].text, 'Synthetic fact.');
+});
+
 async function fixture(t, identity) {
   const paths = [];
   const server = createServer((request, response) => {

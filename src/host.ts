@@ -59,7 +59,7 @@ export interface MemoryExtensionOptions {
   /** Wake the owner-level bounded scheduler; does not perform a foreground flush. */
   wakeDelivery(): void;
   collection?: {
-    sessions: Pick<CollectionSessionRegistry, 'register' | 'boundaries'>;
+    sessions: Pick<CollectionSessionRegistry, 'register' | 'boundaries'> & Partial<Pick<CollectionSessionRegistry, 'begin'>>;
     lifecycleTimeoutMs: number;
     /** Current configured rules; a changed version needs a separate collection grant. */
     policyVersion?: string;
@@ -143,7 +143,10 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
         const work = async () => {
           await options.assertToolIsolation();
           signal.throwIfAborted();
-          await options.collection?.sessions.register(ctx.sessionManager, signal);
+          const sessions = options.collection!.sessions;
+          if (sessions.begin) return sessions.begin(ctx.sessionManager, options.scope ?? null, collectionRequest, signal);
+          await sessions.register(ctx.sessionManager, signal);
+          signal.throwIfAborted();
           return collection.begin(ctx.sessionManager, collectionRequest, signal);
         };
         collectionRequest = await lifecycleDeadline(work, signal);
@@ -284,7 +287,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
       try {
         const work = async () => {
           await options.assertToolIsolation();
-          const state = await options.stateStore.read();
+          const state = await options.stateStore.read(signal);
           if (state.retirement || !state.authorization.enabled || governancePending(state, scope)) { cached = undefined; return ''; }
           const stateKey = memoryRecallStateKey(state, scope);
           if (cached?.stateKey === stateKey && cached.modelKey === modelKey) {
@@ -304,7 +307,7 @@ export function createOpenVikingExtension(options: MemoryExtensionOptions): Exte
           }
           signal.throwIfAborted();
           // Recheck recall-relevant state; unrelated bookkeeping must not discard a slow result.
-          const latest = await options.stateStore.read();
+          const latest = await options.stateStore.read(signal);
           if (latest.retirement || !latest.authorization.enabled || governancePending(latest, scope)
             || memoryRecallStateKey(latest, scope) !== stateKey || query !== currentQuery
             || keyFor(ctx.model) !== modelKey) return '';

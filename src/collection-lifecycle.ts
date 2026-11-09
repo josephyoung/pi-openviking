@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { CollectionRequest, StateStore } from './types.js';
+import type { CollectionRequest, OwnerState, StateStore } from './types.js';
 
 type Session = Pick<ExtensionContext['sessionManager'], 'getSessionId' | 'getBranch'>;
 
@@ -10,43 +10,7 @@ export class CollectionLifecycle {
 
   /** Call before the new user entry is appended, never from a message-end hook. */
   async begin(session: Session, continuationId?: string, signal?: AbortSignal): Promise<string | undefined> {
-    const sessionId = session.getSessionId();
-    const branch = session.getBranch();
-    const baselineEntryId = branch.at(-1)?.id ?? null;
-    return this.store.transact(state => {
-      signal?.throwIfAborted();
-      const authorization = state.authorization;
-      const consent = authorization.collectionConsent;
-      if (!authorization.enabled || !authorization.automaticCollection || !consent || consent.scope !== this.scope) return;
-      state.collectionRequests ??= {};
-      // Queued continuations/retries belong to the same not-yet-settled request.
-      const existing = Object.values(state.collectionRequests).find(request => request.id === continuationId && request.sessionId === sessionId
-        && request.phase === 'running' && request.authorizationEpoch === authorization.epoch
-        && request.collectionRevision === consent.revision && request.scope === this.scope);
-      if (existing) return existing.id;
-      // A new process/request cannot infer settlement of an interrupted run.
-      for (const prior of Object.values(state.collectionRequests)) {
-        if (prior.sessionId === sessionId && prior.phase === 'running') {
-          prior.phase = 'discarded';
-          prior.updatedAt = new Date().toISOString();
-        }
-      }
-      const preceding = [...branch].reverse().find(entry => entry.type === 'message');
-      const prior = preceding?.type === 'message' && preceding.message.role === 'assistant' && preceding.message.stopReason === 'stop'
-        ? Object.values(state.collectionRequests).find(request => request.scope === this.scope
-          && request.completedAssistant?.entryId === preceding.id && request.completedAssistant.entryTimestamp === preceding.timestamp
-          && request.completedAssistant.contentVersion === createHash('sha256').update(JSON.stringify(preceding.message)).digest('hex')
-          && request.authorizationEpoch === authorization.epoch && request.collectionRevision === consent.revision
-          && ['settled', 'processed', 'selection_failed'].includes(request.phase) && request.sourceEntries.includes(preceding.id))
-        : undefined;
-      const id = randomUUID();
-      const now = new Date().toISOString();
-      state.collectionRequests[id] = { id, sessionId, baselineEntryId, scope: this.scope,
-        authorizationEpoch: authorization.epoch, collectionRevision: consent.revision,
-        phase: 'running', createdAt: now, updatedAt: now, sourceEntries: [],
-        ...(prior && preceding ? { confirmationReference: { requestId: prior.id, entryId: preceding.id } } : {}) };
-      return id;
-    }, signal);
+    return this.store.transact(state => beginCollectionRequest(state, session, this.scope, continuationId, signal), signal);
   }
 
   /** Only agent_settled may call this: turn_end/agent_end are insufficient. */
@@ -88,4 +52,44 @@ export class CollectionLifecycle {
       return structuredClone(request);
     }, signal);
   }
+}
+
+/** Shared atomic mutation used after validating a source path. */
+export function beginCollectionRequest(state: OwnerState, session: Session, scope: string | null,
+  continuationId?: string, signal?: AbortSignal): string | undefined {
+  const sessionId = session.getSessionId();
+  const branch = session.getBranch();
+  const baselineEntryId = branch.at(-1)?.id ?? null;
+  signal?.throwIfAborted();
+  const authorization = state.authorization;
+  const consent = authorization.collectionConsent;
+  if (!authorization.enabled || !authorization.automaticCollection || !consent || consent.scope !== scope) return;
+  state.collectionRequests ??= {};
+  // Queued continuations/retries belong to the same not-yet-settled request.
+  const existing = Object.values(state.collectionRequests).find(request => request.id === continuationId && request.sessionId === sessionId
+    && request.phase === 'running' && request.authorizationEpoch === authorization.epoch
+    && request.collectionRevision === consent.revision && request.scope === scope);
+  if (existing) return existing.id;
+  // A new process/request cannot infer settlement of an interrupted run.
+  for (const prior of Object.values(state.collectionRequests)) {
+    if (prior.sessionId === sessionId && prior.phase === 'running') {
+      prior.phase = 'discarded';
+      prior.updatedAt = new Date().toISOString();
+    }
+  }
+  const preceding = [...branch].reverse().find(entry => entry.type === 'message');
+  const prior = preceding?.type === 'message' && preceding.message.role === 'assistant' && preceding.message.stopReason === 'stop'
+    ? Object.values(state.collectionRequests).find(request => request.scope === scope
+      && request.completedAssistant?.entryId === preceding.id && request.completedAssistant.entryTimestamp === preceding.timestamp
+      && request.completedAssistant.contentVersion === createHash('sha256').update(JSON.stringify(preceding.message)).digest('hex')
+      && request.authorizationEpoch === authorization.epoch && request.collectionRevision === consent.revision
+      && ['settled', 'processed', 'selection_failed'].includes(request.phase) && request.sourceEntries.includes(preceding.id))
+    : undefined;
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  state.collectionRequests[id] = { id, sessionId, baselineEntryId, scope,
+    authorizationEpoch: authorization.epoch, collectionRevision: consent.revision,
+    phase: 'running', createdAt: now, updatedAt: now, sourceEntries: [],
+    ...(prior && preceding ? { confirmationReference: { requestId: prior.id, entryId: preceding.id } } : {}) };
+  return id;
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, readFile, writeFile, symlink, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile, symlink, copyFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
@@ -26,6 +26,45 @@ function messages(session, text = 'I prefer short reports.') {
   const assistant = session.appendMessage({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Understood.' }], timestamp: Date.now() });
   return [user, assistant];
 }
+
+test('source registration and pre-input boundary commit in one durable transaction', async t => {
+  const f = await fixture(t);
+  const registry = f.registry();
+  const before = await f.store.read();
+  const id = await registry.begin(f.session, null);
+  const state = await new FileStateStore({ owner: f.store.owner,
+    directory: join(f.root, 'state'), policyVersion: 'v1' }).read();
+  assert.equal(state.revision, before.revision + 1);
+  assert.equal(state.collectionSessionFiles[f.session.getSessionId()], (await realpath(f.sessions)) + '/' + f.session.getSessionFile().split('/').at(-1));
+  assert.equal(state.collectionRequests[id].baselineEntryId, null);
+  assert.equal(state.collectionRequests[id].phase, 'running');
+  // A continuation reuses the durable boundary rather than creating another request.
+  assert.equal(await registry.begin(f.session, null, id), id);
+  assert.equal(Object.keys((await f.store.read()).collectionRequests).length, 1);
+});
+
+test('failed or cancelled atomic begin leaves neither a binding nor a request', async t => {
+  const f = await fixture(t);
+  const registry = f.registry();
+  const session = { getSessionId: () => f.session.getSessionId(),
+    getSessionFile: () => f.session.getSessionFile(), getBranch() { throw new Error('invalidated session'); } };
+  const before = await f.store.read();
+  await assert.rejects(registry.begin(session, null), /invalidated session/);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(registry.begin(f.session, null, undefined, controller.signal));
+  assert.deepEqual(await f.store.read(), before);
+});
+
+test('atomic begin preserves revocation and rejects source rebinding', async t => {
+  const f = await fixture(t); const registry = f.registry();
+  await f.delivery.pause();
+  assert.equal(await registry.begin(f.session, null), undefined);
+  assert.equal(Object.keys((await f.store.read()).collectionRequests ?? {}).length, 0);
+  const second = SessionManager.create(f.root, f.sessions);
+  const rebound = { getSessionId: () => f.session.getSessionId(),
+    getSessionFile: () => second.getSessionFile(), getBranch: () => [] };
+  await assert.rejects(registry.begin(rebound, null), /COLLECTION_SESSION_REBOUND/);
+});
 
 test('persisted source references reopen original pi entries without copying conversation text', async t => {
   const f = await fixture(t); await f.registry().register(f.session);
